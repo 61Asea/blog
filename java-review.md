@@ -352,6 +352,134 @@ thinking in java 上说内部类是为了解决多继承问题（the inner class
 
 ### **Q8: 泛型和泛型擦除是什么**
 
+#### **泛型**
+宽泛的数据类型，接受任意类型的数据，也即是将数据类型参数化，允许强类型程序设计语言在编写代码时定义一些可变部分，把**类型明确的工作推迟到创建对象或调用方法的时候才去明确**的特殊的类型
+
+#### **泛型擦除**
+1. raw type
+
+    1.5向后兼容，为了满足以下的代码在旧版本的JVM照样可以运行,引入了raw type概念
+
+        ArrayList<Integer> iist1 = new ArrayList<Integer>();
+        ArrayList<String> slist = new ArrayList<String>();
+        ArrayList list;
+        list = ilist;
+        list = slist;
+
+    泛型实例化的ArrayList<Integer>和ArrayList<String>而言，ArrayList必须是他们的共同超类。若要实现这种思想，以C++或C#的就编译时模板展开会相当困难，而要支持这种raw type，最直接的办法就是通过擦除法来实现泛型
+
+    ***即编译时确实是泛型的，但是编译结束后泛型类型信息被擦除（已经指定具体类型的泛型信息除外），变成了Object，这也意味着泛型具体类型不能为int、long这些基本数据类型***
+
+2. 原始类型
+
+    如：List<String>最后编译后会被擦除变成List, JVM看到的只是List，其中的泛型变量都将变为原始类型
+    - 无限定的类型变量，如T，将用Object替换
+    - 有限定的则为限定类型替换
+
+        // 证明1：
+        List<String> slist = new ArrayList<String>();
+        slist.add("hello");
+        List<Integer> ilist = new ArrayList<Integer>();
+        ilist.add(1);
+        Syso(slist.getClass() == ilist.getClass()); // true
+
+        // 证明2, 利用反射调用add方法适，可以存储整型，说明String泛型实例在编译之后被擦除掉了，只保留了原始类型
+        slist.getClass().getMethod("add", Object.class).invoke(slist, 1);
+
+    无限定的类型变量用Object替换
+
+3. 类型擦除引起的问题与解决方法
+
+    - 编译时被擦除，那么按正常逻辑是可以在ArrayList<String>中add一个数值的，所以为了防止这种情况，会在编译之前检查。类型检查是针对引用而言，谁是一个引用，用这个引用调用泛型方法，就会对这个引用调用的方法进行类型检测，而无关它真正引用的对象
+    - 因为擦除会导致所有的泛型变量最后都变成原始类型，所以虽然泛型信息会被擦除掉，但是会将(E) elementDate[index]编译为(xxx)elemenetData[index]，就不用我们自己进行强转
+
+
+#### 泛型接口
+通过类去实现这个泛型接口的时候指定泛型T的具体类型，见过的运用常见有mybatis的逆向工厂，生产一个通用的BaseMapper接口，接口方法可以通过T来实现方法参数或返回类型的参数化
+
+#### 泛型类
+在编译器，是无法知道K和V具体是什么类型，只有在运行时才会真正根据类型来构造和分配内存，同时
+
+#### 
+
+#### **demo**
+
+    public interface GenericInterface<T> {
+        public T test();
+    }
+
+    public class CodeBlock {
+        public CodeBlock(int index) {
+            System.out.println("index:" + index);
+        }
+
+        static {
+            System.out.println("Static");
+        }
+
+        {
+            System.out.println("Construct");
+        }
+    }
+
+    public class Generic<K, V> implements GenericInterface<String> {
+        private K key;
+
+        private V value;
+
+        public K getKey() {
+            return key;
+        }
+
+        public void setKey(K key) {
+            this.key = key;
+        }
+
+        public V getValue() {
+            return value;
+        }
+
+        public void setValue(V value) {
+            this.value = value;
+        }
+
+        // test方法的返回类型变成了实现泛型接口传入的具体类型
+        @Override
+        public String test() {
+            return "hello world";
+        }
+
+        @Override
+        public String toString() {
+            return "Generic{" +
+                    "key=" + key +
+                    ", value=" + value +
+                    '}';
+        }
+
+        // <T>来表明该方法是一个泛型方法, 返回类型为T
+        public <T> T getObject(Constructor<T> constructor) throws IllegalAccessException, InstantiationException, InvocationTargetException {
+            T t = constructor.newInstance(1);
+            return t;
+        }
+
+        public static void main(String[] args) throws ClassNotFoundException, InstantiationException, IllegalAccessException, NoSuchMethodException, InvocationTargetException {
+            Generic<String, Integer> generic = new Generic<String, Integer>();
+            // 参数化了接口方法的返回类型
+            System.out.println(generic.test());
+
+            // 实现了成员key、value的类型参数化
+            generic.setKey("score");
+            generic.setValue(100);
+            System.out.println(generic);
+
+            Class clazz = Class.forName("CodeBlock.CodeBlock");
+            Object obj = generic.getObject(
+                clazz.getDeclaredConstructor(int.class)
+            );
+        }
+    }
+
 ## **I/O流**
 #### 如何理解input和output
 为了在程序结束后某些数据得以保存,IO可以帮我们将数据存储到持久化设备中(硬盘,U盘)
@@ -396,3 +524,6 @@ InputStream是所有输入字节类的父类：
 - [Java IO流学习总结](https://zhuanlan.zhihu.com/p/28757397)
 - [内部类用处的思考](https://www.iteye.com/blog/sunxg-557846)
 - [谈谈对4种内部类的理解，和使用场景分析](https://blog.csdn.net/xinzhou201/article/details/81950188)
+- [Java 不能实现真正泛型的原因是什么？-RednaxelaFX回答](https://www.zhihu.com/question/28665443/answer/118148143)
+- [Java中的泛型会被类型擦除，那为什么在运行期仍然可以使用反射获取到具体的泛型类型？-陆萌萌回答](https://www.zhihu.com/question/346911525/answer/830285753)
+- [Java泛型类型擦除以及类型擦除带来的问题](https://www.cnblogs.com/wuqinglong/p/9456193.html)
