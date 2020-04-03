@@ -502,6 +502,33 @@ thinking in java 上说内部类是为了解决多继承问题（the inner class
     - 频繁往外读取内容的，适合用上界Extends
     - 经常往里插入的，适合用下界Super
 
+## **集合**
+### **Q1: 简述一下集合主要有哪些类和接口，各自有什么特点**
+需要同步的话可以用Collections类的同步
+
+    // Collections.synchronizedXXX(c);
+    Collections.synchronizedList(list);
+
+1. 主要有两个接口Collection和Map，其中Collection又包括List、Set和Quene
+2. List是有序的，主要包括ArrayList/LinkedList/Vector,
+    - ArrayList底层是Object[]数组，线程不安全，查询快增删慢
+    - LinkedList底层是使用双向链表实现，查询慢增删快
+    - Vector效率较低，线程安全，被弃用（Vector会在你不需要进行线程安全的时候，强制给你加锁，导致了额外开销，所以慢慢被弃用）
+3. Set是唯一且无序的，主要包括了HashSet、LinkedHashSet和TreeSet
+- HashSet的底层是HashMap，利用了HashMap的key来保证元素的唯一性，涉及到了HashMap的hash方法，并用一个虚拟的PRESENT对象作为Map的value
+- LinkedHashSet可以按照key的操作顺序排序，双向链表，存储的元素是有序的，内部使用LinkedHashMap
+- TreeSet支持按照默认或指定的排序规则排序
+4. Quene队列，主要有ArrayBlockingQuene基于数组的阻塞队列、LinkedBlockingQuene基于链表的阻塞队列
+5. Map以k-v键值对存储元素，包括HashMap, LinkedHashMap和TreeMap，HashMap底层是数组+链表/红黑树实现,LinkedHashMap是HashMap的子类，通过维护一个LinkedList，来维护插入顺序与table中的顺序
+
+### **Q2：HashMap是线程安全的吗？**
+不安全，但可以使用ConcurrentHashMap来保证线程安全
+- ConcurrentHashMap基于减小锁粒度，通过分段锁来实现线程安全，默认情况下内部Segement数组有16个
+- Segement的结构与HashMap类似，继承了ReentrantLock，本身就是一个锁
+- Segement内部是数组+链表的结构，每个Segement都包含了一个HashEntry数组，每个HashEntry都是一个Node链表结构；若要对其进行修改，则必须获得相对应的Segement锁
+- 多线程下只要加入的数据hashCode映射的数据段不一样，就可以做到并行的线程安全
+
+
 ## **I/O流**
 #### 如何理解input和output
 为了在程序结束后某些数据得以保存,IO可以帮我们将数据存储到持久化设备中(硬盘,U盘)
