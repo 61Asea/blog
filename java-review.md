@@ -214,6 +214,10 @@ tip：使用组合的方式会更好
 #### 3. 多态
 同一个类型的对象执行相同的行为，在不同的状态下表现出不同的特征。多态可以降低类之间的耦合度，右边对象可以实现组件化切换，业务功能随之改变，便于扩展和维护
 
+- 本质为对引用的虚函数表在运行时进行覆盖，即编译时类型的引用表现出运行时类型的行为
+- 向上兼容，所以多态是无需强制类型转换的（即运行时类型是编译时类型的子类时），上面无需：Father f = (Father)new Son()
+- 
+
 eg： 接口，工厂
 
 ### **Q2：类和对象**
@@ -384,6 +388,7 @@ thinking in java 上说内部类是为了解决多继承问题（the inner class
         Syso(slist.getClass() == ilist.getClass()); // true
 
         // 证明2, 利用反射调用add方法适，可以存储整型，说明String泛型实例在编译之后被擦除掉了，只保留了原始类型
+
         slist.getClass().getMethod("add", Object.class).invoke(slist, 1);
 
     无限定的类型变量用Object替换
@@ -391,7 +396,7 @@ thinking in java 上说内部类是为了解决多继承问题（the inner class
 3. 类型擦除引起的问题与解决方法
 
     - 编译时被擦除，那么按正常逻辑是可以在ArrayList<String>中add一个数值的，所以为了防止这种情况，会在编译之前检查。类型检查是针对引用而言，谁是一个引用，用这个引用调用泛型方法，就会对这个引用调用的方法进行类型检测，而无关它真正引用的对象
-    - 因为擦除会导致所有的泛型变量最后都变成原始类型，所以虽然泛型信息会被擦除掉，但是会将(E) elementDate[index]编译为(xxx)elemenetData[index]，就不用我们自己进行强转
+    - 因为擦除会导致所有的泛型变量最后都变成原始类型，所以虽然泛型信息会被擦除掉，但是会将(E) elementDate[index]编译为(xxx)elemenetData[index]，就不用我们自己进行强转。（不用写是因为编译时类型还没有擦除，编译器可以识别出你返回的是string，你也可以多此一举的强制转换，类型擦除是运行时）
 
 
 #### 泛型接口
@@ -399,8 +404,6 @@ thinking in java 上说内部类是为了解决多继承问题（the inner class
 
 #### 泛型类
 在编译器，是无法知道K和V具体是什么类型，只有在运行时才会真正根据类型来构造和分配内存，同时
-
-#### 
 
 #### **demo**
 
@@ -480,6 +483,25 @@ thinking in java 上说内部类是为了解决多继承问题（the inner class
         }
     }
 
+### **Q9：泛型标记***
+- E：集合elemenet，在集合中使用，表示在集合中存放的元素
+- T：指Type，表示Java类，包括基本的类以及自定义类
+- K：指Key，表示键，例如Map集合中的Key
+- V：指value，表示值，例如Map集合中的Value
+- N：指Number，表示数值类型
+- ?: 不确定的Java类型
+
+### **Q10：泛型限定是什么**
+1. 类型通配符使用？表示所有具体的参数类型，在使用泛型的时候，如果希望将类的继承关系加入泛型应用中就需要对泛型做限定，具体的泛型限定有对泛型上限的限定以及对泛型下限的限定
+
+2. 对泛型上限的限定使用<? extends T>，它表示该通配符所代表的类型是T类的子类型或T接口的子接口，**即[T, 正无穷)，不允许添加除null的元素，获取的元素类型是C**
+
+3. 对泛型下限的限定使用<? super T>，它表示该通配符所代表的类型是T类的父类型或T接口的父接口，**即(负无穷, T]，允许添加C以及C的子类类型的元素，获取的元素类型是Object**
+
+4. PECS原则
+    - 频繁往外读取内容的，适合用上界Extends
+    - 经常往里插入的，适合用下界Super
+
 ## **I/O流**
 #### 如何理解input和output
 为了在程序结束后某些数据得以保存,IO可以帮我们将数据存储到持久化设备中(硬盘,U盘)
@@ -520,6 +542,7 @@ InputStream是所有输入字节类的父类：
 - [集合初始化时应指定初始值大小](https://blog.csdn.net/zhuolou1208/article/details/81252090)
 - [initialCapaCity存疑](https://zhuanlan.zhihu.com/p/39924972)
 - [static静态变量和静态代码块的执行顺序](https://blog.csdn.net/sinat_34089391/article/details/80439852)
+- [面向对象：多态、编译时运行时、向上兼容](https://blog.csdn.net/qq_38962004/article/details/79690605)
 - [关于Java的Object.clone()方法与深浅拷贝](https://www.cnblogs.com/nickhan/p/8569329.html)
 - [Java IO流学习总结](https://zhuanlan.zhihu.com/p/28757397)
 - [内部类用处的思考](https://www.iteye.com/blog/sunxg-557846)
@@ -527,3 +550,4 @@ InputStream是所有输入字节类的父类：
 - [Java 不能实现真正泛型的原因是什么？-RednaxelaFX回答](https://www.zhihu.com/question/28665443/answer/118148143)
 - [Java中的泛型会被类型擦除，那为什么在运行期仍然可以使用反射获取到具体的泛型类型？-陆萌萌回答](https://www.zhihu.com/question/346911525/answer/830285753)
 - [Java泛型类型擦除以及类型擦除带来的问题](https://www.cnblogs.com/wuqinglong/p/9456193.html)
+- [<? extends T>和<? super T>](https://www.jianshu.com/p/520104cfd0ff)
