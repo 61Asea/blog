@@ -1,5 +1,5 @@
 # **Java Review**
-## **数据类型/基础语法**
+## **1. 数据类型/基础语法**
 ### **Q1：简单说说Java有哪些数据类型**
 基本数据类型包括：
 1. 数值型：
@@ -199,7 +199,7 @@ ArrayList默认容量为10，HashMap默认容量为16，因此到相同size时�
             }
         }
 
-## **面向对象**
+## **2. 面向对象**
 ### **Q1：简述面向对象特性**
 #### 1. 封装
 建议成员变量私有，然后提供公有的getter/setter方法来获取值/赋值，封装的核心思想是合理隐藏，合理暴露，可以提高安全性，实现代码的组件化
@@ -502,7 +502,7 @@ thinking in java 上说内部类是为了解决多继承问题（the inner class
     - 频繁往外读取内容的，适合用上界Extends
     - 经常往里插入的，适合用下界Super
 
-## **集合**
+## **3. 集合**
 ### **Q1: 简述一下集合主要有哪些类和接口，各自有什么特点**
 需要同步的话可以用Collections类的同步
 
@@ -522,14 +522,145 @@ thinking in java 上说内部类是为了解决多继承问题（the inner class
 5. Map以k-v键值对存储元素，包括HashMap, LinkedHashMap和TreeMap，HashMap底层是数组+链表/红黑树实现,LinkedHashMap是HashMap的子类，通过维护一个LinkedList，来维护插入顺序与table中的顺序
 
 ### **Q2：HashMap是线程安全的吗？**
-不安全，但可以使用ConcurrentHashMap来保证线程安全
+不安全，在高并发的情况下，若扩容(transfer方法)时因为线程调度所分配的时间片用完暂停，多线程可能会导致死循环，原因是因为头插法，在并发情况下，会导致某一头结点的next又是其头结点的next，链表成环，造成死循环
+
+可以使用ConcurrentHashMap来保证线程安全
+#### JDK7版本的ConcurrentHashMap
+***JDK1.7中ConcurrentHashMap采用了数组+Segment+分段锁的方式实现***
 - ConcurrentHashMap基于减小锁粒度，通过分段锁来实现线程安全，默认情况下内部Segement数组有16个
 - Segement的结构与HashMap类似，继承了ReentrantLock，本身就是一个锁
 - Segement内部是数组+链表的结构，每个Segement都包含了一个HashEntry数组，每个HashEntry都是一个Node链表结构；若要对其进行修改，则必须获得相对应的Segement锁
 - 多线程下只要加入的数据hashCode映射的数据段不一样，就可以做到并行的线程安全
+- ConcurrentHashMap定位一个元素的过程需要进行两次Hash操作，第一次Hash定位到Segment，第二次Hash定位到元素所在的链表的头部
 
+#### JDK8版本的ConcurrentHashMap
+***JDK8中ConcurrentHashMap参考了JDK8 HashMap的实现，采用了数组+链表+红黑树的实现方式来设计，内部大量采用CAS操作***
 
-## **I/O流**
+- Node：保存key，value及key的hash值的数据结构。其中value和next都用volatile修饰，保证并发的可见性
+- synchronized+CAS+HashEntry+红黑树
+- 原来是对需要进行数据操作的Segment加锁，现调整为对每个数组元素加锁(Node)
+- 从原来的遍历链表O(n)，变成遍历红黑树O(logN)
+
+### **Q2 extra1: HashMap的indexFor和hash方法**
+    // 扰动函数
+    static final int hash(Object key) {
+        int h;
+        return (key == null) ? 0 : (h = key.hashCode()) ^ (h >>> 16);
+    }
+
+    static int indexFor(int h, int length) {
+        // 对数组的长度取模，得到的余数则为数组的下表
+        return h & (length - 1);
+    }
+
+key.hashCode()函数调用的是key键值类型自带的哈希函数，返回int型散列值
+
+理论上散列值是一个int型，如果直接拿散列值作为下标访问HashMap主数组的话，考虑到2进制32位带符号的int表值范围从-2147483648到2147483648。前后加起来大概40亿的映射空间。只要哈希函数映射得比较均匀松散，一般应用是很难出现碰撞的
+
+问题是一个40亿长度的数组，内存是放不下的，用之前还要先做对数组的长度取模运算，得到的余数才能用来访问数组下标。源码中模运算是在这个indexFor( )函数里完成的
+
+这也正好解释了为什么HashMap的数组长度要取2的整数幂。因为这样（数组长度-1）正好相当于一个“低位掩码”。“与”操作的结果就是散列值的高位全部归零，只保留低位值，用来做数组下标访问
+
+右位移16位，正好是32bit的一半，自己的高半区和低半区做异或，就是为了混合原始哈希码的高位和低位，以此来加大低位的随机性。而且混合后的低位掺杂了高位的部分特征，这样高位的信息也被变相保留下来
+
+### **Q3：List、Set和Map有什么区别？**
+1. List是有序的，可重复和有索引的集合，继承了Collection集合全部功能，除了Collection的三种遍历方式外，可用索引遍历
+2. Set是无序，不可重复的集合，Set的实现类LinkedHashSet和TreeSet是有序的，LinkedHashSet可以按照插入的时间先后和元素操作时间排序，TreeSet可以按照默认的比较规则或者自定义规则排序
+3. Map是无序的，以k-v键值对形式存储元素，键不可重复，值无要求，重复键值会覆盖
+
+### **Q3 extra：Collection的三种遍历方式**
+- 迭代器
+- 普通for循环
+- foreach循环
+
+        public static void main(String[] args) {
+            List<String> list = new ArrayList<>();
+            list.add(1);
+            list.add(2);
+
+            // 1. 迭代器
+            Iterator<String> it = list.iterator();
+            while(it.hasNext()) {
+                String s = it.next();
+                Syso(s);
+            }
+
+            // 2. 普通遍历
+            Object[] objs = list.toArray(new Object[list.size()]);
+            for (int i = 0; i < objs.length; i++) {
+                Syso(objs[i]);
+            }
+
+            // 3. foreach遍历
+            for (String s : list) {
+                Syso(s);
+            }
+        }
+
+- 上述List的索引遍历：
+
+        String s = list.get(index);
+
+### **Q4：HashSet是如何去重的**
+底层其实用了HashMap的不允许重复键特性
+1. 基本类型，可直接按值进行比较
+2. 引用类型，会先比较hashCode()是否相同(即定位到Map内部数组的某一项)，再通过遍历链表，以K.eqauls()方法判断是否相同，都相同则返回，都不相同则插入
+3. 如果希望内容相同的对象就代表对象相同，那么除了重写equals方法外，还要重写hashCode方法（以确保能定位到相同的Map内部数组某一项），只有hashCode和equals方法返回都为相同的才能说明是同一个对象
+
+### **Q4：HashMap的put方法**
+1. 根据put方法传入k的hashCode()得到初步hashCode，再与高16位(k >>> 16)进行异或，得到hashCode
+2. hashCode与（数组长度 - 1）通过与操作进行取模，得到数组下标
+3. 遍历下表对应链表/树，通过equals()方法对K进行相等判断，若相等则覆盖掉K对应V
+
+    **第一和第二点的详情可以看Q2 extra**
+
+### **Q5：HashMap和HashSet的底层是怎么实现的？**
+1. JDK8前，HashMap的底层实现是数组+链表
+2. 每个元素都是一个单链表，链表中的每个元素都是内部类Node(实现了Map.Entry<K, V>)的实现,Node包括4个属性：key、value、hash和next
+3. JDK8后采用了数组+链表/红黑树的做法，当链表元素超过8个后，会转换为红黑树提升效率，时间复杂度为O(logn)
+4. HashSet基于HashMap实现，其元素其实是存放在了内部一个HashMap的Key上，value是一个默认对象
+
+### **Q6：Collection和Collections的区别**
+Collection是一个集合接口，Collections是一个工具类，为Collection接口实现类提供很多方法，如addAll批量添加，shuffle打乱，sort排序
+
+### **Q7：迭代器是什么？**
+实现Iterator接口，是一个遍历Collection集合的一个游标,初始化时迭代器位于第一个元素之前，通过next()获取到下一个元素，并往后移一位
+
+    List<String> list = new ArrayList<>();
+    Iterator<String> it = list.iterator();
+    while(it.hasNext()) {
+        it.next();
+    }
+
+### **Q8：foreach遍历时是否可以添加或删除元素**
+**foreach的底层是迭代器Iterator实现的**，如果进行添加或删除元素会产生Fast-fail问题，抛出ConcurrentModificationException异常，因为增删会影响modCount的值，当modCount与预期的exceptedModCount不一致时，会抛错
+
+### **Q9：Queue接口中的add()/offer()、remove()/poll()、element()/peek()方法有什么区别**
+1. add()和offer()都是向队列尾部插入一个元素，区别在于当超过队列界限，add会抛出异常，offer返回false
+2. remove()和poll()都是出队，区别在于队列为空时，remove会抛出异常，poll将返回null值
+3. element和peek都是查看队列头，区别在于队列为空时，element会抛出异常，peek将返回null值
+
+### **Q10：线程安全的集合类**
+JUC中的concurrentHashMap, Vector(锁粒度太大被弃用), HashTable(锁粒度太大被弃用), Collections.synchronizedXXX()
+
+其中ArrayList -> Collections.synchronizedList/CopyOnWriteArrayList
+CopyOnWriteArrayList和Collections.synchronizedList是实现线程安全的列表的两种方式, 两种实现方式分别针对不同情况有不同的性能表现
+- Collections.synchronized的写性能较为优秀，读是通过synchronized悲观锁实现，效率不如CopyOnWriteArrayList
+- CopyOnWriteArrayList在多线程下写操作性能较差，而多线程的读操作性能较好
+
+### **Q10 extra: copyOnWriteArrayList**
+其每次写操作都会进行一次数组复制操作，然后对新复制的数组进行些操作，不可能存在在同时又读写操作在同一个数组上，而读操作并没有对数组修改，不会产生线程安全问题。
+
+其中setArray()操作仅仅是对array进行引用赋值。Java中“=”操作只是将引用和某个对象关联，**假如同时有一个线程将引用指向另外一个对象，一个线程获取这个引用指向的对象，那么他们之间不会发生ConcurrentModificationException，他们是在虚拟机层面阻塞的**，而且速度非常快，是一个**原子操作**，几乎不需要CPU时间
+
+在列表有更新时直接将原有的列表复制一份，并再新的列表上进行更新操作，完成后再将引用移到新的列表上。旧列表如果仍在使用中(比如遍历)则继续有效。如此一来就不会出现修改了正在使用的对象的情况(读和写分别发生在两个对象上)，同时读操作也不必等待写操作的完成，免去了锁的使用加快了读取速度。
+
+## **4. 多线程**
+### **Q1：创建线程有哪几种实现方式？分别有什么优缺点**
+1. 继承Thread类，重写run()方法即可，功能单一，不能继承其他类
+2. 实现Runable接口，重写run()方法，并将该实现类作为参数传入Thread构造器，优点是可以继承其他类，避免了单继承的局限性
+
+## **5. I/O**
 #### 如何理解input和output
 为了在程序结束后某些数据得以保存,IO可以帮我们将数据存储到持久化设备中(硬盘,U盘)
 
@@ -539,8 +670,8 @@ thinking in java 上说内部类是为了解决多继承问题（the inner class
 
 #### 1. 字节流和字符流
 字符流的由来： 因为数据编码的不同，而有了对字符进行高效操作的流对象。本质其实就是基于字节流读取时，去查了指定的码表。 字节流和字符流的区别：
-- 读写单位不同：字节流以字节（8bit）为单位，字符流以字符为单位，根据码表映射字符，一次可能读多个字节。
-- 处理对象不同：字节流能处理**所有类型的数据（如图片、avi等）**，而字符流只能处理**字符类型==的数据。
+- 读写单位不同：字节流以字节（8bit）为单位，字符流以字符为单位，根据码表映射字符，一次可能读多个字节
+- 处理对象不同：字节流能处理**所有类型的数据（如图片、avi等）**，而字符流只能处理**字符类型==的数据
 
 ***结论：只要是处理纯文本数据，就优先考虑使用字符流。 除此之外都使用字节流***
 
@@ -578,3 +709,5 @@ InputStream是所有输入字节类的父类：
 - [Java中的泛型会被类型擦除，那为什么在运行期仍然可以使用反射获取到具体的泛型类型？-陆萌萌回答](https://www.zhihu.com/question/346911525/answer/830285753)
 - [Java泛型类型擦除以及类型擦除带来的问题](https://www.cnblogs.com/wuqinglong/p/9456193.html)
 - [<? extends T>和<? super T>](https://www.jianshu.com/p/520104cfd0ff)
+- [HashMap中的hash函数](https://www.cnblogs.com/zhengwang/p/8136164.html)
+- [ArrayList线程安全](https://blog.csdn.net/xiangcaoyihan/article/details/78228962)
