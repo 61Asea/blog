@@ -342,6 +342,7 @@ eg: 一个类有多个构造器
 
 - 局部内部类：定义在方法、构造器、代码块、循环中。只能定义实例成员变量和实例方法，作用范围仅在局部代码块中
 - 匿名内部类：没有名字的局部内部类，可以简化代码，匿名内部类会立即创建一个匿名内部类的对象返回，对象类型相当于当前new的类的子类类型
+- 静态内部类：HashMap的静态内部-Node实现类
 
 thinking in java 上说内部类是为了解决多继承问题（the inner class is as the rest of the solution of the multiple-inheritance problem）
 
@@ -658,7 +659,215 @@ CopyOnWriteArrayList和Collections.synchronizedList是实现线程安全的列�
 ## **4. 多线程**
 ### **Q1：创建线程有哪几种实现方式？分别有什么优缺点**
 1. 继承Thread类，重写run()方法即可，功能单一，不能继承其他类
-2. 实现Runable接口，重写run()方法，并将该实现类作为参数传入Thread构造器，优点是可以继承其他类，避免了单继承的局限性
+
+        // 单继承，意味着该类如果已经继承于某超类，则不能实现多线程
+        public MyThread extends Thread {
+            @Override
+            public void run() {}
+
+            public static void main(String[] args) {}
+        }
+
+    由于线程资源与Thread实例捆绑在一起，所以不同线程的资源不会进行共享
+
+2. 实现Runnable接口，重写run()方法，并将该实现类作为参数传入Thread构造器，优点是可以继承其他类，避免了单继承的局限性
+
+        public MyThread implements Runnable {
+            @Override
+            public void run() {}
+
+            public static void main(String[] args) {
+                Thread thread = new Thread(new MyThread());
+                thread.start();
+            }
+        }
+
+    静态代理，线程资源与MyThread实例绑定在一起，Thread只是作为一个代理类，所以资源可以共享
+
+3. 相比Thread/Runnable可以获取返回值，具体步骤为：实现Callable接口，重写call()方法，并包装成FutureTask对象作为参数传入Thread构造器
+
+        // 不使用lambda-1
+        public class MyThread implements Callable<String> {
+            @Override
+            public String call() {
+                return 10086;
+            }
+
+            public static void main(String[] args) {
+                FutureTask<String> future = new FutureTask<>(new MyThread());
+                new Thread(future).start();
+            }
+        }
+
+        // 不使用lambda-2, 匿名内部类
+        public class MyThread {
+            Callable<String> cb = new Callable<>() {
+                @Override
+                public String call() throws Exception {
+                    Syso("Callable");
+                    return "inner";
+                }
+            };
+
+            FutureTask<String> task = new FutureTask<>(cb);
+            new Thread(task).start();
+        }
+
+        // 使用lambda
+        public class MyThread {
+            public static void main(String[] args) {
+                FutureTask<Integer> future = new FutureTask<>(
+                    () -> 10086
+                );
+                new Thread(future, "").start();
+
+                try {
+                    Syso(future.isDone()); // 不阻塞
+                    Syso(future.get()); // 获得task的返回值，会阻塞
+                } catch (Exception ex) {
+                    ex.printStackTrace();
+                }
+            }
+        }
+
+    - 创建Callable接口实现类，并实现call()方法，创建该实现类的实例(JDK8后可以直接使用lambda创建Callable对象)
+    - 使用FutureTask去包装Callable对象，该FutureTask对象封装了Callable对象的call()方法返回值
+    - 使用FutureTask对象作为Thread.start的target参数，启动线程
+    - 调用futureTask.get方法阻塞获得子线程的执行返回值
+
+#### Callable<T>
+    // 泛型决定返回的类型，也可以抛出异常
+    public interface Callable<V> {
+        V call() throws Exception;
+    }
+
+#### Future<V> 
+为Future<V>接口的具体实现用于封装Callable，用来获取异步计算结果的，说白了就是对**具体的Runnable(用Executor.callable封装成callable)或者Callable**对象任务执行的结果进行获取get(),取消cancel(),判断是否完成等操作：
+
+- 若任务还未开始，cancel(...)则返回false；
+- 若任务已经启动，cancel(true)将试图中断该任务线程来停止任务，如果停止成功，返回true；- 若任务已经启动，cancel(false)不会对正在执行的任务线程产生影响；
+- 若任务已经完成，cancel(...)则返回false；
+
+        public interface Future<V> {
+            V get(); // 获取异步执行的结果，如果没结果可用，该方法则阻塞到计算完成
+
+            V get(long timeout, TimeUnit unit); // 同上，但是阻塞有时间限制timeout
+
+            boolean isDone(); // 如果任务执行结束，无论是正常结束还是中途取消还是发生异常，都返回true
+
+            boolean isCancelled(); // 任务在被完成前取消，则返回true
+
+            boolean cancel(boolean mayInterruptRunning); 
+        }
+
+#### FutureTask<V>
+FutureTask<V>为Future<V>接口的具体实现
+
+FutureTask实现了Runnable接口，所以可以通过Thread传入做静态代理来运行线程
+
+    // FutureTask实现Runnable接口，意味着它可以直接提交给Executor执行
+    public interface RunnableFuture<V> extends Future<V>, Runnable {
+        void run();
+    };
+
+    public class FutureTask<V> implements RunnableFuture<V> {
+        public FutureTask(Runnable runnable, V result) {
+            // 将runnable封装成callable(底层运用了适配器模式)
+            this.callable = Executors.callable(runnable, result); 
+            this.state = NEW;
+        }
+
+        public FutureTask(Callable<V> callable) {
+            this.callable = callable;
+            this.state = NEW;
+        }
+
+        @Override
+        public void run() {
+            try {
+            Callable<V> c = callable;
+            if (c != null && state == NEW) {
+                V result;
+                boolean ran;
+                try {
+                    result = c.call(); // 在此处调用包装在内部的callable
+                    ran = true;
+                } catch (Throwable ex) {
+                    result = null;
+                    ran = false;
+                    setException(ex);
+                }
+                if (ran)
+                    set(result); // CAS操作
+            }
+        }
+    };
+
+4. 通过线程池创建(Executor框架)
+
+        public interface ExecutorService extends Executor {
+            <T> Future<T> submit(Callable<T> task);
+
+            <T> Future<T> submit(Runnable task);
+        }
+
+第一个方法：submit提交一个实现Callable接口的任务，并且返回封装了异步计算结果的Future
+第二个方法：submit提交一个实现Runnable接口的任务，并且返回封装了异步计算结果的Future
+
+因此我们只要创建好我们的线程对象（实现Callable接口或者Runnable接口），然后通过上面3个方法提交给线程池去执行即可。还有点要注意的是，除了我们自己实现Callable对象外，我们还可以使用工厂类Executors来把一个Runnable对象包装成Callable对象。Executors工厂类提供的方法如下
+
+在AbstractExecutorService，submit()返回的类型为泛型方法<T> FutureTask<T> newTaskFor()的返回类型，具体为FutureTask
+
+### **Q2： 线程有哪些状态？**
+New -> Runnable -> Blocked/Waiting/Timed waiting -> Dead
+1. New：初始化状态，new操作创建一个线程，此时程序还未开始运行线程里的任务
+2. Runnable：可运行状态，调用线程的start方法变更，进入可运行线程池中，等待线程调度选中
+3. Blocked：阻塞状态，内部锁(不是juc的锁)获取失败时，进入阻塞状态
+    - Waiting：等待其他线程唤醒时进入等待状态
+    - TimedWaiting：计时等待，带超时参数的方法
+4. WAITING: 等待其他线程唤醒时进入等待状态
+5. Timed Waiting: 计时等待，带超时参数的方法，例如sleep(long time)
+6. Terminated：终止状态，线程正常运行完毕或被未捕获异常终止
+
+### **Q2 extra: 阻塞状态关于sleep()、yield()、notify()/notifyAll()和wait()**
+#### 线程对象与锁对象的概念
+线程对象是Thread的实力对象，多个线程之间合作需要同步，而锁是实现线程同步的机制之一，锁也是一个对象，**Java中所有的对象都可以当做锁来使用**
+
+#### 锁池和等待池的概念
+
+锁池与等待池分别是不同线程状态的两种集合，Java虚拟机会为每个对象维护两个“队列”（姑且称之为“队列”，尽管它不一定符合数据结构上队列的“先进先出”原则）
+
+锁池(Entry Set入口集)：某对象锁被当前线程A所持有，其他想持有该锁的线程则会进入到锁池中，待线程A释放锁，锁池中的线程具备竞争锁的资格
+
+等待池(Wait Set等待及)：当锁对象调用wait方法时，持有该对象的线程进入等待池中，进入等待池的线程对象不具备持有锁的资格
+
+#### Object类：wait、notify、notifyAll
+对象锁，也被称为监视器，synchronized(xxx)
+
+- wait()
+
+    - wait()方法是Object类的方法，无须重写，可以认为该方法属于锁对象，调用者为锁对象，意思为**持有该锁的线程进入wait状态，释放锁，并进入等待池中**
+
+    - 若没有其他线程调用对象锁的notifyA2ll/notify，调用了同一个对象锁的Object.wait的线程会一直等待
+
+    - 调用wait()与wait(0)效果一样
+
+    - 调用wait()方法必须先获得对象锁，有一种说法认为，执行wait()方法之后，可能会有中断或者虚假的唤醒，所以wait()方法一般要放在一个 循环中（一般wait()方法的调用是伴随一个条件的，条件发生时才调用wait()
+
+- notify()/notifyAll()
+
+    - 会在等待池中随机选择一个或全部线程对象放入锁池中，即不保证立即执行，除非线程优先级更高
+
+#### Thread类：sleep、join、yield
+- sleep()
+
+    sleep是Thread的静态方法，调用者是线程对象，sleep的作用是**将当前线程暂停一定的时间，但不释放锁**
+
+- join()
+
+    等待调用join()方法的线程死亡，当前线程才继续往下运行,比如在线程t1代码中调用了t2.join()，则t1要等t2死亡之后才能继续执行
+
+
 
 ## **5. I/O**
 #### 如何理解input和output
@@ -711,3 +920,5 @@ InputStream是所有输入字节类的父类：
 - [<? extends T>和<? super T>](https://www.jianshu.com/p/520104cfd0ff)
 - [HashMap中的hash函数](https://www.cnblogs.com/zhengwang/p/8136164.html)
 - [ArrayList线程安全](https://blog.csdn.net/xiangcaoyihan/article/details/78228962)
+- [java并发之sleep与wait、notify与notifyAll的区别](https://blog.csdn.net/u012719153/article/details/78915034)
+- [Java中对象的锁池和等待池](https://www.baidu.com/link?url=KMwXaB2naXAACR9dJUrtr4t1NbITiLBBaJXknBk-NLNYDMGLwRZ6J2E-pyEDY8-FpLfZcCFANeWF29PaTT8ESDsIk6DaV9ymwckHq8Hswty&wd=&eqid=d8e3e57700010cf7000000065e8da632)
