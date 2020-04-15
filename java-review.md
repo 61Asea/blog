@@ -881,30 +881,21 @@ ExecutorService的子接口AbstractExecutorService，submit()返回的类型为�
 - 使用内部锁synchronized，可以使用同步代码块，如果是实例方法则用this作为锁对象，如果是静态方法，可以用类.class作为锁
 - 使用java.util.concurrent包中的锁，如显示锁ReentrantLock
 
-**解决方法本质：在单个原子操作中，更新所有相关的状态变量**
+**问题本质：出现线程安全的问题一般是因为主内存和工作内存数据不一致性和重排序导致的**
+
+**解决方法：在单个原子操作中，更新所有相关的状态变量**
 
 若一个对象没有状态变量，我们认为他是线程安全的；
 若一个对象只有一个状态变量，当该状态变量是线程安全的，那我们认为他是线程安全的（此时原子操作中更新了所有相关的状态变量）
 但当一个对象有多个状态变量，即使全部状态变量都是安全的，他也可能不是线程安全的（原子操作没有更新所有相关的状态变量）
 
-### **Q3 extra：竞态条件**
-1. Checkt then Act，先检查再执行
-2. Read-Update-Write, 读取-修改-写入
-
-### **Q4：多线程不可见的原因和解决方法**
-1. 不可见的原因是栈中不同线程有自己的工作内存，线程都是从主内存拷贝共享变量的副本，在自己的工作内存中操作共享变量
-2. 内部锁：获得锁后，线程清空工作内存，从主内存拷贝共享变量的最新副本，修改后刷新回主内存，再释放锁
-3. 使用volatile关键字，被volatile修饰的变量会通知其他线程之前读取到的值已失效，线程会加载最新值到自己的工作内存中
-4. 显式锁
-5. 原子变量
-
-        @ThreadSafe
+    @ThreadSafe
         public class Main {
             // 该类的状态变量只有一个，通过原子变量来保证该状态的线程安全，则可以认为该类是线程安全的了
             private AtomicInteger value = new AtomicInteger(0);
 
             public Integer nextValue() {
-                  // 内部锁/监视锁/可重入锁(解决子类父类方法死锁)
+                    // 内部锁/监视锁/可重入锁(解决子类父类方法死锁)
         //        synchronized (this) {
                     for (int i = 0; i < 100000; i++) {
                         value.incrementAndGet();
@@ -925,8 +916,157 @@ ExecutorService的子接口AbstractExecutorService，submit()返回的类型为�
                 System.out.println(main.value); // 20000
             }
         }
-### **Q5：说一说volatile关键字的作用**
 
+### **Q3 extra：竞态条件**
+1. Checkt then Act，先检查再执行
+2. Read-Update-Write, 读取-修改-写入
+
+### **Q4：多线程不可见的原因和解决方法**
+    @NotThreadSafe
+        public class NoVisable {
+            private static boolean ready;
+            private static int number;
+
+            public static class Reader extends Thread {
+                @Override
+                public void run() {
+                    while(!ready) {
+                        Thread.yield();
+                    }
+                    System.out.println(number);
+                }
+            }
+
+            public static void main(String[] args) {
+                new Reader().start();
+                number = 42;
+                ready = true;
+            }
+        }
+
+    上述demo会有四种情况，
+    1. 正常输出42
+    2. 无限循环，number为0
+        
+        主线程对ready的设置还没来得及写回主存（静态变量放在方法区中），Reader已经读取了ready的值(false)并保留了副本加载到Java栈中，此时ready一直为false所以出现死循环；number同理
+
+    3. 输出0（重排序）
+
+        主线程对ready的设置已经写回了主内存，但number的设置还没来得及写回主存，然后就加载到了java栈中，输出number为0（由于Java虚拟机的一种优化技术叫指令重排序，number = 42不一定会在ready = true前面执行）
+
+    4. 无限循环，number为42
+
+        主线程对number的设置已经写回了主存，但ready的设置还没写回主存，读线程就加载了值并保留副本导致
+
+#### **不可见原因**
+栈中不同线程有自己的工作内存，线程都是从主内存拷贝共享变量的副本，在自己的工作内存中操作共享变量
+
+#### **解决方案**
+1. 内部锁
+
+    有一种常见的误解：synchronized只能用于实现原子性或者确定“临界区”，其还能保证**内存可见性**。获得锁后，线程清空工作内存，从主内存拷贝共享变量的最新副本，修改后刷新回主内存，运行完毕再释放锁
+
+    加锁的含义**不仅仅局限于互斥行为，还包括了内存可见性**。为了确保所有线程都能读取到最新写入的值，所有执行读操作和写操作的线程都必须在同一个锁上同步
+
+2. volatile
+
+    被volatile修饰的变量会通知其他线程之前读取到的值已失效，线程会加载最新值到自己的工作内存中
+
+### **Q5：说一说volatile关键字的作用**
+保证**内存可见性**，被volatile修饰的变量能够保证每个线程能够获取该变量的最新值，从而避免出现数据脏读的现象
+
+它是一种稍弱的同步机制，当把变量声明为volatile之后，编译器与运行时都会注意到该变量是共享的，不会将关于它的操作与其他内存操作进行重排序
+
+volatile不会被缓存在寄存器或者其他处理器不可见的地方，因此在读取volatile类型的变量总是返回最新值
+
+**工作内存的缓存行将重新填充，包括了其他的共享变量的更新**
+
+#### 实现原理
+
+生成汇编代码时会在volatile修饰的共享变量进行写操作的时候会多出#Lock前缀的指令：
+1. 保证CPU缓存行的数据会写回主存
+2. 写回主存的操作会使得其他CPU里缓存(工作内存)该值内存地址的数据无效
+
+通过多处理器的缓存一致性协议，每个处理器通过嗅探在总线上传播的数据来检查自己缓存的值是不是过期，这样其他CPU会因为变量是否过期失效来重新读取变量值，以此保证内存可见性
+
+#### volatile的happens-before关系
+对一个volatile域的写，一定先行发生于任意后续对这个volatile的读，即若按该关系书写代码，则volatile域的写对于volatile域的读是可见的
+
+#### volatile的内存语义
+- 当写一个volatile变量时，JMM会把该线程的工作内存的**所有共享变量**刷新到主内存中
+- 当读一个volatile变量时，JMM会把该线程工作内存置为无效，线程接下来将从主存中读取共享变量值
+
+这也意味着：
+1. 在volatile域的写之前任何操作，不可以重排序到volatile域写之后，不然会使得volatile域写的之前操作得到的缓存无法跟随StoreLoad屏障一起刷新到主存中，导致共享变量不一致
+2. 在volatile域的读之后任何操作，不可以重排序到volatitle域读之前，不然会使得之前读到的数据都是旧数据
+3. 因为先行发生关系，为了保证可见性，若先后顺序为：volatile域写和volatile域读，则两者不可重排序
+
+#### volatile的内存语义实现
+通过**内存屏障**来实现，JIT会在volatile域的前/后添加内存屏障，以防止重排序，进而实现volatile的内存语义
+
+1. volatile域的写之前，添加了StoreStore屏障，以禁止普通写/volatile写与其进行重排序
+
+2. volatile域的写之后，添加了StoreLoad屏障，以禁止下面的读/写与当前volatile域的写重排序，以确保刷新工作内存到主存后才能进行读、写
+
+3. volatile域的读之后，添加了LoadLoad屏障，禁止下面的读操作与其进行重排序
+
+4. volatile域的读之后，还添加了LoadStore屏障，禁止下面的写操作与其进行重排序
+
+**重点说下StoreLoad屏障，它是确保可见性的关键，因为它会将屏障之前的写缓冲区中的数据全部刷新到主内存中**
+
+具体场景：一写多读的场景，如JDK1.8的concurrentHashMap的val和next变量，这样多线程环境下线程A修改结点或者新增结点，对于线程B是可见的
+
+### **Q5 extra: happens-before（先行发生于关系）**
+JMM可以通过happens-before关系向程序员提供跨线程的内存可见性保证
+
+自己理解：就是只要我们按照规则来编写代码，使前后操作满足happens-before关系，并且前后操作的重排序会导致结果不一致，则前一个操作的结果对于后续操作是可见的
+
+如果A线程的写操作a与B线程的读操作b之间存在happens-before关系，尽管a操作和b操作在不同的线程中执行，但JMM向程序员保证a操作将对b操作可见
+
+#### **2大定义**
+- 如果一个操作happens-before另一个操作，那么第一个操作的执行结果将对第二个操作可见，而且第一个操作的执行顺序排在第二个操作之前
+
+- 两个操作之间存在happens-before关系，并不意味着Java平台的具体实现必须要按照happens-before关系指定的顺序来执行。如果重排序之后的执行结果，与按happens-before关系来执行的结果一致，那么这种重排序并不非法
+
+#### **6大规则**
+1. 程序顺序规则
+
+    一个线程中，按照程序顺序，前面的操作 Happens-Before 于后续的任意操作。第一行的 "double pi = 3.14; " happens-before 于 “double r = 1.0;”
+
+            double pi = 3.14; // A
+            double r = 1.0; // B
+            double area = pi * r * r; // C
+
+2. 监视器锁规则
+
+    对一个锁的解锁，happens-before于随后对这个锁的加锁。这个规则中说的锁其实就是Java里的 synchronized。例如下面的代码，在进入同步块之前，会自动加锁，而在代码块执行完会自动释放锁，加锁以及释放锁都是编译器帮我们实现的。
+
+        synchronized (this) { //此处自动加锁
+        // x是共享变量,初始值=10
+        if (this.x < 12) {
+            this.x = 12; 
+        }  
+        } //此处自动解锁
+
+    所以结合锁规则，可以理解为：假设 x 的初始值是 10，线程 A 执行完代码块后 x 的值会变成 12（执行完自动释放锁），线程 B 进入代码块时，能够看到线程 A 对 x 的写操作，也就是线程 B 能够看到 x==12
+
+3. volatile变量规则
+
+    对一个volatile域的写，happens-before于任意后续对这个volatile域的读
+
+4. 传递性
+
+    如果A happens-before B，且B happens-before C，那么A happens-before C。
+
+5. start()规则
+
+    这条是关于线程启动的。它是指主线程 A 启动子线程 B 后，子线程 B 能够看到主线程在启动子线程 B 前的操作。
+
+6. join()规则
+
+    如果线程A执行操作ThreadB.join()并成功返回，那么线程B中的任意操作happens-before于线程A从ThreadB.join()操作成功返回。
+
+通过上面6中 happens-before 规则的组合就能为我们程序员提供一致的内存可见性。 常用的就是规则1和其他规则结合，为我们编写并发程序提供可靠的内存可见性模型
 
 ### **Q6：说一说synchronized关键字的作用**
 可重入
@@ -984,3 +1124,7 @@ InputStream是所有输入字节类的父类：
 - [ArrayList线程安全](https://blog.csdn.net/xiangcaoyihan/article/details/78228962)
 - [java并发之sleep与wait、notify与notifyAll的区别](https://blog.csdn.net/u012719153/article/details/78915034)
 - [Java中对象的锁池和等待池](https://www.baidu.com/link?url=KMwXaB2naXAACR9dJUrtr4t1NbITiLBBaJXknBk-NLNYDMGLwRZ6J2E-pyEDY8-FpLfZcCFANeWF29PaTT8ESDsIk6DaV9ymwckHq8Hswty&wd=&eqid=d8e3e57700010cf7000000065e8da632)
+- [Java并发编程实战-线程不可见NoVisable例子的详解](https://bbs.csdn.net/topics/390757750?locationNum=15&fps=1)
+- [理解volatile-通过JMM与happens-before来理解](https://www.jianshu.com/p/157279e6efdb)
+- [JMM-volatile的内存语义](https://www.cnblogs.com/yuanfy008/p/9335168.html)
+- [为什么ConcurrentHashMap的读操作不需要加锁？](https://www.cnblogs.com/keeya/p/9632958.html)
