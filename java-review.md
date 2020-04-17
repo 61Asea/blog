@@ -46,7 +46,7 @@
 ### **Q4：final, finally和finalize区别**
 1. final用于修饰类，方法和变量。若使用它在某种程度上保证对象，变量不可变，可以形成线程安全
 - final修饰的类**不可继承**
-- final修饰的变量**引用不可变，值可变**
+- final修饰的变量**其引用不可变，值可变**
 - final修饰的方法**不可重写**
 2. finally是try-catch块的最后必须执行的代码块，可以用来释放资源等等
 3. finalize是Object类的方法，在对象被GC回收前会调用一次，用于资源回收
@@ -56,7 +56,7 @@
 2. 若没重写，equals默认按照==进行比较，如果重写了对象的equals方法，按照定制规则进行比较
 3. 两个对象如果相等，那么它们的hashCode必须相等，但如果两个对象的hashCode值相等，它们不一定相等
 
-hashCode：JVM每new一个对象，都会将这个Object丢到一个哈希表里，众所周知，哈希表的内部实现是数组+链表。相同hashCode的对象都会放在链表上，所以如果这个object确实equal，必要前提就是它的hashCode要等于object的hashCode
+hashCode：JVM每new一个对象，都会将这个Object丢到一个哈希表里，众所周知，哈希表的内部实现是数组+链表/红黑树。相同hashCode的对象都会放在链表/红黑树上，所以如果这个object确实equal，必要前提就是它的hashCode要等于object的hashCode
 
 ### **Q6：Array和ArrayList的区别**
 1. Array长度在定义之后就不允许改变了，而ArrayList是长度可变，可以自动扩容
@@ -1046,10 +1046,10 @@ JMM可以通过happens-before关系向程序员提供跨线程的内存可见性
     对一个锁的解锁，happens-before于随后对这个锁的加锁。这个规则中说的锁其实就是Java里的 synchronized。例如下面的代码，在进入同步块之前，会自动加锁，而在代码块执行完会自动释放锁，加锁以及释放锁都是编译器帮我们实现的。
 
         synchronized (this) { //此处自动加锁
-        // x是共享变量,初始值=10
-        if (this.x < 12) {
-            this.x = 12; 
-        }  
+            // x是共享变量,初始值=10
+            if (this.x < 12) {
+                this.x = 12; 
+            }  
         } //此处自动解锁
 
     所以结合锁规则，可以理解为：假设 x 的初始值是 10，线程 A 执行完代码块后 x 的值会变成 12（执行完自动释放锁），线程 B 进入代码块时，能够看到线程 A 对 x 的写操作，也就是线程 B 能够看到 x==12
@@ -1072,8 +1072,94 @@ JMM可以通过happens-before关系向程序员提供跨线程的内存可见性
 
 通过上面6中 happens-before 规则的组合就能为我们程序员提供一致的内存可见性。 常用的就是规则1和其他规则结合，为我们编写并发程序提供可靠的内存可见性模型
 
+### **Q5 extra：JDK5之前的DCL**
+    public class SingletonDCL {
+        private static SingletonDCL instance;
+
+        public static SingletonDCL getInstance() {
+            if (instance == null) {
+                synchronized (SingletonDCL.class) {
+                    if (instance == null)
+                        instance = new SingletonDCL(); // ERROR
+                }
+            }
+            return instance;
+        }
+    }
+
+ERROR行JVM可能出现重排序，因为符合happens-before的第二定义，那么某线程A进入内部锁并执行Error行时，可能会出现：
+
+    memory = allocate();　　// 1.分配对象的内存空间
+    ctorInstance(memory);　　// 2.初始化对象
+    sInstance = memory;　　// 3.设置sInstance指向刚分配的内存地址
+
+=》
+
+    memory = allocate();　　// 1.分配对象的内存空间
+    sInstance = memory;　　// 2.设置sInstance指向刚分配的内存地址，此时对象还没有被初始化
+    ctorInstance(memory);　　// 3.初始化对象
+
+若此时线程B在访问最外层instance == null时，因为已经分配了引用指向的内存地址，将会直接返回实例并退出（将不完全构造的对象加载到工作内存中），出现问题
+
+JDK5之后，出现了volatile关键字，可以通过内存屏障禁止掉上述的重排序，即第二个操作是volatile写时，则禁止第一个操作与其进行重排序
+
+### **Q5 extra：不可见带来的问题**
+    public class HolderManager {
+        private Holder holder;
+
+        public void initialize() {
+            holder = new Holder(42);
+        }
+
+        public Holder getInstance() {
+            return this.holder;
+        }
+
+        public static void main(String[] args) {
+            HolderManager manager = new HoldManager();
+            manager.initialize();
+            
+            new Thread(() -> {
+                manager.getInstance().assertSanity();
+            }).start();
+
+            // AssertError throws: boom
+        }
+    }
+
+    public class Holder {
+        private int i;
+
+        public Holder(i) {
+            this.i = i;
+        }
+
+        public void assertSanity() {
+            if (i != i)
+                throw new AssertError("boom");
+        }
+    }
+
+    // 有可能抛出AssertError
+
+这个问题类似于DCL问题，问题在于：
+
+- 初始化过程可能被重排序
+- Object的构造函数先于子类的构造函数，会先设置默认值
+- i != i不是一个原子操作，线程切换时，会见到不同的i值
+
+对象可能先发布再被初始化，Holder对象的状态对其他线程不可见，其他线程可能看到他的 **i** 有以下几种情况：
+- i == Object.DEFAULT(0)
+- i == 42
+- i 不存在
+
+因为Holder是可变的，存在线程A调用了holderManager.initialize()后，holder不完全初始化，线程B直接调用holder的assertSanity
+1. 读取第一个i，读到null/0便被线程A切换
+2. 线程A真正完成了holder的初始化，CPU时间片切换回线程B
+3. 读取第二个i，读到42
+4. null / 0 != 42, throw AssertError
+
 ### **Q6：说一说synchronized关键字的作用**
-可重入
 
 ## **5. I/O**
 #### 如何理解input和output
