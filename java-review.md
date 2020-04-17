@@ -1016,6 +1016,10 @@ volatile不会被缓存在寄存器或者其他处理器不可见的地方，因
 
 具体场景：一写多读的场景，如JDK1.8的concurrentHashMap的val和next变量，这样多线程环境下线程A修改结点或者新增结点，对于线程B是可见的
 
+    volatile boolean ready;
+
+    while(ready) {}
+
 ### **Q5 extra: happens-before（先行发生于关系）**
 JMM可以通过happens-before关系向程序员提供跨线程的内存可见性保证
 
