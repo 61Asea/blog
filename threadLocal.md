@@ -197,3 +197,4 @@ ThreadLocal在ThreadLocalMap中以一个弱引用被ThreadLocalMap.Entry中的Ke
 - [ThreadLocal源码分析-set方法](https://www.cnblogs.com/noodleprince/p/8657399.html)
 - [正确理解ThreadLocal](https://www.iteye.com/topic/103804)
 - [ThreadLocal内存泄露真因探究](https://www.jianshu.com/p/a1cd61fa22da)
+- [threadlocalMap的Key是弱引用，用线程池有可能泄露](https://www.cnblogs.com/aspirant/p/8991010.html)

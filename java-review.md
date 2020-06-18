@@ -103,7 +103,7 @@ ArrayList默认容量为10，HashMap默认容量为16，因此到相同size时�
     // 弥补Stream.of的策略
     Arrays.stream(arrays).foreach(System.out :: println); // 1, 2, 3
 
-#### IntStream/DoubleStream/LongStream数值流
+#### IntStream/DoubleStream/LongStreamStream数值流
 
 聚合方法：
 - rangeClosed/range（左右开闭不同）: 返回子序列[a, b]或[a, b)
@@ -1218,3 +1218,4 @@ InputStream是所有输入字节类的父类：
 - [理解volatile-通过JMM与happens-before来理解](https://www.jianshu.com/p/157279e6efdb)
 - [JMM-volatile的内存语义](https://www.cnblogs.com/yuanfy008/p/9335168.html)
 - [为什么ConcurrentHashMap的读操作不需要加锁？](https://www.cnblogs.com/keeya/p/9632958.html)
+- [JMM-final](https://www.infoq.cn/article/java-memory-model-6/)
