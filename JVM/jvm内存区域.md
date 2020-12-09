@@ -387,7 +387,7 @@ HotSpot，一般栈不支持动态扩展，所以在能申请到内存空间后�
     -Xms：堆的最小值
     -Xmx：堆的最大值
     设置成一样大的话，可以避免堆自动扩展
-    -XX:HeapDumpOnOutOfMemoryError: 可以在出现内存溢出异常时Dump出当前的内存堆转储快照
+    -XX:+HeapDumpOnOutOfMemoryError: 可以在出现内存溢出异常时Dump出当前的内存堆转储快照
 
 分析到底是出现了**内存泄漏**还是**内存溢出**
 
