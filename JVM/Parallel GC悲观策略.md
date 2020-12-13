@@ -1,5 +1,12 @@
 ## ** Parallel GC悲观策略 **
 
+PSScavenge（新生代的并行），PSMarkSweep（套了一层皮的SerialOld，串行的标记整理算法），PSCompact（后来真正意义上的并行老年代标记整理）
+
+-XX:UseParallelGC: PSScavenge + PSMarkSweep（并行化young gen GC，串行化old gen GC）
+-XX:UseParallelOldGC: PSScavenge + PSCompact(不止并行化了youngGC，也并行化了Old GC)
+
+从java se 7u4版本后：使用-XX:+UseParallelGC，会默认开启+UseParallelOldGC
+
 ### **1. PGC的YGC/FGC策略**
 
 在YGC执行前：
