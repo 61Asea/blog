@@ -48,7 +48,7 @@
 
 ## **Q3: G1收集器聊一下?**
 
-## **Q4:**
+## **Q4:**G1和CMS的全局并发标记有几个阶段？其中哪几个阶段是全暂停的，为什么全暂停**
 
 # 参考
 - [copy GC 和 mark & compaction GC的算法异同](https://www.cnblogs.com/chuliang/p/8689418.html)
