@@ -50,6 +50,21 @@
 
 ## **Q4:**G1和CMS的全局并发标记有几个阶段？其中哪几个阶段是全暂停的，为什么全暂停**
 
+## **Q5: G1是不是分代，怎么划分内存区域**
+
+有**采用分代的思想**，并**使用多个固定大小Region**的内存布局
+
+每块region都有**唯一的分代标志(eden/survivor/old)**，eden region集构成Eden空间，survivor region集合构成Survivor空间，old region集合构成Old空间
+
+Region的大小可以通过参数-XX:G1HeapRegionSize设定，取值范围是：1M - 32M，且是2的指数
+
+自动决定逻辑：
+**size = （堆最大值 + 堆最小值） / 2 / TARGET_REGION_NUMBER(2048)**
+
+然后size取最靠近2的幂数值，将size控制在[1M, 32M]之间
+
+
+
 # 参考
 - [copy GC 和 mark & compaction GC的算法异同](https://www.cnblogs.com/chuliang/p/8689418.html)
 - [Copy GC(1) : 基本原理](https://zhuanlan.zhihu.com/p/28197216)
