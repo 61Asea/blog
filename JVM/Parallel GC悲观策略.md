@@ -1,5 +1,7 @@
 ## ** Parallel GC悲观策略 **
 
+这个策略与**空间分配担保**相似
+
 PSScavenge（新生代的并行），PSMarkSweep（套了一层皮的SerialOld，串行的标记整理算法），PSCompact（后来真正意义上的并行老年代标记整理）
 
 -XX:UseParallelGC: PSScavenge + PSMarkSweep（并行化young gen GC，串行化old gen GC）
@@ -119,7 +121,11 @@ PSScavenge（新生代的并行），PSMarkSweep（套了一层皮的SerialOld�
 
 2. caches.clear()之后的情况
 
+# 总结
 
+在minor gc之前，先检查老年代最大可用的连续空间是否大于新生代所有对象的总空间，在Parallel GC中，如果不满足会转而进行一次Full GC
+
+而如果-XX:HandlePromotionFailure参数，允许运行担保失败的话，会再以历代晋升老年代大小进行对比，如果大于的话，则冒险的进行一次YGC；小于、或没有开启担保的话，会转而变成Full GC
 
 # 参考
 - [GC悲观策略之Parallel GC篇](https://blog.csdn.net/liuxiao723846/article/details/72808495/)
