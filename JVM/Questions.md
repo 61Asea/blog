@@ -156,6 +156,10 @@ Region的大小可以通过参数-XX:G1HeapRegionSize设定，取值范围是：
 
 然后size取最靠近2的幂数值，将size控制在[1M, 32M]之间
 
+## **Q6: 双亲委派模型的优势**
+
+1. 避免核心类库被篡改
+2. 避免类重复加载，父加载器加载后，子加载器没必要再加载一次
 
 # 参考
 - [copy GC 和 mark & compaction GC的算法异同](https://www.cnblogs.com/chuliang/p/8689418.html)
