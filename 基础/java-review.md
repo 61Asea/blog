@@ -828,9 +828,13 @@ ExecutorService的子接口AbstractExecutorService，submit()返回的类型为�
 6. Terminated：终止状态，线程正常运行完毕或被未捕获异常终止
 
 #### 各种情况下的状态流程
-1. sleep()或wait(), 唤醒后竞争不到锁
+<!-- 1. sleep()或wait(), 唤醒后竞争不到锁
 
-    New -> Runnable -> Waiting -> Runnable -> Blocked -> Runnable -> Terminated
+    New -> Runnable.Running -> Waiting(此时线程调用wait()方法，进入等待队列) -> Blocked(其他持有锁的线程已完成，被唤醒，进入锁池) -> Runnable（获取不到，重新进入锁池） -> Blocked（等待当前线程释放锁）-> Runnable.Ready -> Terminated -->
+
+1. wait(),被notify/notifyAll唤醒后,竞争到锁并执行完毕
+
+    new -> runnable.running -> waiting(持有锁线程调用wait()方法，释放锁并让出cpu资源) -> blocked(被唤醒，从等待队列加入到锁池中) -> runnable.ready(竞争到锁) -> runnable.running(获得os分配的cpu资源) -> dead
 
 2. 竞争不到内部锁，无sleep()或wait()
 
