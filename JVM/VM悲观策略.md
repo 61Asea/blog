@@ -1,4 +1,4 @@
-## ** Parallel GC悲观策略 **
+## ** VM悲观策略 **
 
 这个策略与**空间分配担保**相似
 
@@ -9,7 +9,7 @@ PSScavenge（新生代的并行），PSMarkSweep（套了一层皮的SerialOld�
 
 从java se 7u4版本后：使用-XX:+UseParallelGC，会默认开启+UseParallelOldGC
 
-### **1. PGC的YGC/FGC策略**
+### **1. VM的悲观策略**
 
 在YGC执行前：
 
