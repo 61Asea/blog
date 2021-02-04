@@ -24,6 +24,8 @@
 
 1. aload_0/aload_1/...: 加载局部变量表中，指定索引的值到栈中
 
+2. astore_0/astore_1/...: 赋值给局部变量表指定索引的变量
+
 常量：
 
 1. iconst_1/biconst/liconst/siconst: 压入整数常量到操作栈中
@@ -36,6 +38,9 @@
 
 3. return：查找栈帧中的方法出口，返回
 
+![字节码反编译](https://imgconvert.csdnimg.cn/aHR0cHM6Ly9tbWJpei5xcGljLmNuL3N6X21tYml6X3BuZy9rcmpsNlFiaWE2V2tldld1dlFpYmxYaWJyZm5aWmRPWWxBQ2NYOTQ3RmhXdEFaMjBtMFZReXV1bWRlY05ISXk3Sk5hNlk3VjdIUE90UWZpY0dDRWo2dTlyM1EvNjQw?x-oss-process=image/format,png)
+
+![反编译文件的字节码与详情](https://imgconvert.csdnimg.cn/aHR0cHM6Ly9tbWJpei5xcGljLmNuL3N6X21tYml6X3BuZy9rcmpsNlFiaWE2V2tldld1dlFpYmxYaWJyZm5aWmRPWWxBQ1pFcEY2U2tJSEx5MkR6Rkx1UTVvWVhjamRHZDhNS2JjeHZRaWFhYVJpYnhaU29VSnRDaDBJeWtRLzY0MA?x-oss-process=image/format,png)
 
 ```java
 public class Demo {
@@ -105,10 +110,11 @@ public class mm.Demo {
 
 从jvm对线程的虚拟机栈和栈帧（操作数栈，局部变量表）的概念，可以看出执行引擎（LWP线程）的操作流程为：
 
-    从虚拟机栈中弹出一个栈帧 -> 执行字节码指令 -> cpu寄存器执行时，弹出操作数栈 -> 
+    将虚拟机栈的栈顶作为当前栈帧 -> 执行当前栈帧（对应当前方法）字节码指令 -> cpu寄存器执行时，弹出操作数栈 -> 
 
 # 参考
 - [Java常用的字节码指令](https://blog.csdn.net/itcats_cn/article/details/81113647)
 - [线程栈-当前栈帧](https://www.cnblogs.com/jpxjx/p/12539919.html)
 - [iconst、bipush、sipush、ldc指令的区别](https://blog.csdn.net/xiaojin21cen/article/details/106403053)
 - [getfield指令硬件操作](https://www.sohu.com/a/169345173_283613)
+- [关于JVM字节码中dup指令的问题 - R大回复](https://www.zhihu.com/question/52749416)

@@ -127,7 +127,7 @@ GC发生时，只要筛选卡表中的脏卡页，加入到GC Roots中一并扫�
 
     但该花销比扫描时加入整个老年代小
 
-问题2: 写屏障引入的“伪共享”
+问题2: 写屏障放大了“伪共享”问题
 
 在高并发场景下会出现伪共享问题，现代CPU缓存系统是以缓存行（Cache Line）为单位存储的，当多线程互相修改自己变量时，如果这些变量恰好共享一个缓存行，那么会彼此影响（写回、失效、同步），导致性能下降
 
@@ -237,3 +237,5 @@ OopMap: 加速根节点枚举直接获得全部对象引用，无须去遍历所
 # 参考
 - [原始快照的标记方式](https://www.zhihu.com/question/406277136)
 - [并发的可达性分析](https://www.cnblogs.com/thisiswhy/p/12354864.html)
+- [CPU缓存行的问题](https://www.cnblogs.com/jokerjason/p/9584402.html)
+- [内存，寄存器和cache的区别与联系](https://www.cnblogs.com/zzdbullet/p/9484040.html)

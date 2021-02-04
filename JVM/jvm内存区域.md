@@ -29,7 +29,11 @@ tip：
 
     总共有十个优先级Thread.MIN_PRIORITY至Thread.MAX_PRIORITY
 
+![](https://imgconvert.csdnimg.cn/aHR0cHM6Ly9tbWJpei5xcGljLmNuL3N6X21tYml6X3BuZy9rcmpsNlFiaWE2V2tldld1dlFpYmxYaWJyZm5aWmRPWWxBQzJxRGM4MmNnOFQ0eGNRaWNlZ1ptWXJIZVF3aWM3V3ZZRDd2bTBDRkxnWGliSWVkQ1V2dTZnQkxLQS82NDA?x-oss-process=image/format,png)
+
 ![vm内存区域](https://images2015.cnblogs.com/blog/584866/201704/584866-20170426175411428-34722603.png)
+
+![执行引擎-线程私有(PC、虚拟机栈、本地方法栈)](https://imgconvert.csdnimg.cn/aHR0cHM6Ly9tbWJpei5xcGljLmNuL3N6X21tYml6X3BuZy9rcmpsNlFiaWE2V2tldld1dlFpYmxYaWJyZm5aWmRPWWxBQ0xuSDc5cDEwVWV5UFN3TjFqS24wUWNsSFo4MUpLTENkS2lhaWFhbVhlUWFtUXIwbG43UDNub09RLzY0MA?x-oss-process=image/format,png)
 
 #### **1.1 程序计数器（线程私有）**
 
