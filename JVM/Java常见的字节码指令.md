@@ -4,6 +4,8 @@
 
     javap -c [类文件] > [反编译后的文本]
 
+    javap -v [类文件] > [反编译后的文本] （这个可以看到常量池等信息）
+
     eg: javap -c ./Demo.class > Demo.txt
 
 这个demo包含的字节码指令有：
