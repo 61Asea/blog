@@ -14,6 +14,7 @@
 
     保证共享变量的修改能够及时可见
 
+        JMM：
         对一个变量unlock操作之前，必须要同步到主内存中；如果对一个变量进行lock操作，则将会清空工作内存中此变量的值，在执行引擎使用此变量前，需要重新从主内存中load操作或assign操作初始化变量值
 
 3. 有序性
@@ -22,9 +23,9 @@
 
 4. 可重入性
 
-    最大的作用是避免线程间死锁
+    最大的作用是避免线程死锁，避免自己锁自己的情况发生
 
-        子类同步方法调用了父类同步方法，如没有可重入的特性，则会产生死锁
+        method1同步方法内调用了另一个同步方法，如没有可重入的特性，则会尝试再去获取monitor，但是因为计数器在进入method1的时候已经不为0，会造成线程死锁
 
 ## 2. 字节码文件层面
 
@@ -81,18 +82,47 @@ public synchronzied void method();
 
 ### 3. 操作系统层面
 
-上述第二点的两种方式本质上都没有区别，两个指令的执行都是JVM通过调用操作系统的mutex互斥原语来实现的，被阻塞的线程会被挂起、等待重新调度
+上述第二点的两种方式本质上都没有区别，都是JVM通过调用操作系统的mutex互斥原语来实现的，被阻塞的线程会被挂起、等待重新调度
 
-挂起，重新调度，会导致“用户态和内核态”两个态之间进行切换，对性能有较大影响
+重量级锁通过监视器对象monitor实现，其中monitor的本质是依赖于底层系统的Mutex Lock实现，这会导致线程从用户态向内核态转换（挂起，重新调度），会导致“用户态和内核态”两个态之间进行切换，对性能有较大影响
 
     线程1执行同步块，发现monitor已被其他线程占有，会进行阻塞，此时调用内核指令，切换到内核态，执行阻塞
 
     重新调度锁池的线程，也会切换到内核态中进行唤醒恢复，并重新切换到用户态继续执行
 
-### 4. 
+在这里需要与volatile的lock#前缀锁定做一个区分，mutex锁是操作系统层面的互斥原语，而lock#前缀属于更深层次的汇编指令
+
+即**mutex的实现的底层也是用到lock#前缀的指令，保证作为互斥锁提供的原子性操作**
+
+### 4. Mark Word/Monitor的具体结构
+
+#### 4.1 对象头中的Mark Word
+Synchronized用的锁存在于对象的对象头中，其中对象头中的Mark Word标记字存储着对象运行时的数据，它是实现偏向锁和轻量锁的关键（锁优化）
+
+Mark Work的结构设计为根据不同的运行状态，复用自己的存储空间，以便在极小的空间下存储更多的数据，而对象的状态由状态位进行表现
+
+    可以理解为标记字的状态位变化，基本与对象和线程锁定情况来进行变化
+
+![标志位对应的对象状态（锁定状态）](https://upload-images.jianshu.io/upload_images/2062729-36035cd1936bd2c6.png)    
+
+#### 4.2 对象Mark Word与线程Lock Record
+
+    在线程进入同步代码时，如果该同步对象没有被锁定，即它的锁标志位为01，则虚拟机在该线程的栈中创建Lock Record空间，用于存储锁对象的Mark Word的拷贝（Displaced Mark Word）
+
+Lock Record是线程的私有数据结构，每一个线程都有一个可用Lock Record列表，同时还有一个全局的可用列表
+
+每一个被锁的对象，其Mark Word都会与一个Lock Record相关联
+
+Lock Record：存储了markword的拷贝，Owner字段记录了锁对象的markword
+
+Mark Word：锁记录指针指向获得锁的线程id
+
+#### 4.3 Monitor
+
 
 # 参考
 - [synchronized与volatile原理-内存屏障的重要实践](https://www.cnblogs.com/lemos/p/9252342.html)
 - [深入分析Synchronized原理(阿里面试题)](https://www.cnblogs.com/aspirant/p/11470858.html)
 - [](https://blog.csdn.net/qq_36268025/article/details/106137960)
 - [就是要你懂Java中volatile关键字实现原理](https://www.cnblogs.com/xrq730/p/7048693.html)
+- [lock指令前缀与mutex锁](https://blog.csdn.net/saintyyu/article/details/94493694)
