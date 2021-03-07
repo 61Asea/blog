@@ -126,3 +126,4 @@ Mark Word：锁记录指针指向获得锁的线程id
 - [](https://blog.csdn.net/qq_36268025/article/details/106137960)
 - [就是要你懂Java中volatile关键字实现原理](https://www.cnblogs.com/xrq730/p/7048693.html)
 - [lock指令前缀与mutex锁](https://blog.csdn.net/saintyyu/article/details/94493694)
+- [线程Lock Record与对象Mark Word的关联](https://blog.csdn.net/slslslyxz/article/details/106363990)
