@@ -193,3 +193,6 @@ Mark Word：锁记录指针指向获得锁的线程id
 - [lock指令前缀与mutex锁](https://blog.csdn.net/saintyyu/article/details/94493694)
 - [线程Lock Record与对象Mark Word的关联](https://blog.csdn.net/slslslyxz/article/details/106363990)
 - [JVM 的Lock Record简介](https://blog.csdn.net/qq_33589510/article/details/105317593)
+
+- [能否完整的讲述一下java synchronized关键字的锁升级的过程](https://www.zhihu.com/question/267980537/answer/1267465466)
+- [偏向锁膨胀到轻量级锁的时候lock-record记录的是什么？](https://www.zhihu.com/question/402591325)
