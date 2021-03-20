@@ -209,9 +209,66 @@ lock/tryLock(Lock接口) -> Sync的lock模板方法（NonfairSync/FairSync对loc
     }
 ```
 
-## **2. AQS关键操作**
+## **2. AQS关键数据结构**
 
-### **2.1 获取同步状态的操作**
+### **2.1 Node**
+
+通过Unsafe类的objectFieldOffset()方法用于**获取某个字段相对Java对象的"起始地址"的偏移量**
+```java
+// 对obj对象的某个引用类型字段进行CAS（offset代表该字段的起始位置，相对于obj对象的偏移量）
+public native compareAndSwapObject(Object obj, long offset, Object expect, Object update)
+```
+
+```java
+public abstract class AbstractQueuedSynchronizer {
+    private transient volatile Node head;
+    private transient volatile Node tail;
+    private volatile int state;
+
+    // AQS同步队列的偏移量
+    private static final long headOffset;
+    private static final long tailOffset;
+    private static final long stateOffset;
+
+    // Node关键字段的偏移量
+    private static final long waitStatusOffset;
+    private static final long nextOffset;
+
+    static final class Node {
+        // 共享模式（CountDownLatch等）
+        static final Node SHARED = new Node();
+
+        // 独占模式（各种锁）
+        static final Node EXCLUSIVE = null;
+
+        static final int CANCELLED = 1;
+        static final int SIGNAL = -1;
+        static final int CONDITION = -2;
+        static final int PROPAGATE = -3;
+
+        volatile int waitStatus;
+        volatile Node prev;
+        volatile Node next;
+        Node nextwaiter;
+
+        volatile Thread thread;
+    }
+}
+```
+
+### **2.2 同步队列**
+
+![同步队列](https://upload-images.jianshu.io/upload_iages/19073098-803c32a55e7816e3.png?imageMogr2/auto-orient/strip|imageView2/2/w/938/format/webp)
+
+头节点只起到索引作用，不关联任何线程，只有后驱节点
+
+### **2.3 等待队列**
+
+
+
+## **3. AQS关键操作**
+
+### **3.1 获取资源的操作**
 
 1. acquire(int arg)
 
@@ -271,13 +328,13 @@ private Node enq(final Node node) {
 }
 ```
 
-![同步队列](https://upload-images.jianshu.io/upload_images/19073098-803c32a55e7816e3.png?imageMogr2/auto-orient/strip|imageView2/2/w/938/format/webp)
-
 3. acquireQueued(final Node node, int arg)
 
 synchronized加入同步队列后就使得线程挂起，而aqs会找到最前驱的节点，CAS设置其值为SIGNAL后，并最后尝试一次获取资源
 
-若获取不到资源，且状态仍未SIGNAL，则线程挂起
+**若依旧获取不到资源，且状态仍为SIGNAL，则线程挂起**
+
+    从效果上看，AQS本身并没有提供自旋机制，且挂起线程的内存语义与Synchronized相同
 
 ```java
 final boolean acquireQueued(final Node node, int arg) {
@@ -303,6 +360,71 @@ final boolean acquireQueued(final Node node, int arg) {
     } finally {
         if (failed)
             cancelAcquire(node);
+    }
+}
+```
+
+```java
+private static boolean shouldParkAfterFailedAcquire(Node pred, Node node) {
+    // 拿出前驱节点的状态
+    int ws = pred.waitStatus;
+    if (ws == Node.SIGNAL) {
+        // SIGNAL，一般意味着有其他的线程，或本线程在上次轮询中，设置了前驱节点为SIGNAL
+        // 并且竞争失败
+        return true;
+    }
+
+    if (ws > 0) {
+        // 一直往链表的前面查找，直到找到不为取消状态的前驱节点为止
+        do {
+            node.prev = pred = pred.prev
+        } while (pred.waitStatus > 0);
+        pred.next = node;
+    } else {
+        compareAndSwapWaitStatus(pred, ws, Node.SIGNAL);
+    }
+    return false;
+}
+```
+
+4. cancelAcquire(Node node)
+
+当获取同步状态发生异常时，需要取消线程竞争同步状态的操作
+当到达获取同步状态的超时时间，还无法获得同步状态，则调用该方法
+
+```java
+private void cancelAcquire(Node node) {
+    if (node == null)
+        return;
+
+    node.thread = null;
+
+    // 找到当前需要取消节点的状态不为取消的前驱节点
+    Node pred = node.prev;
+    while (pred.waitStatus > 0)
+        node.prev = pred = pred.prev;
+    // 上面的while循环已经得到的是node之上，第一个不为CANCELLED的节点，所以predNext肯定为CANCELLED
+    Node predNext = pred.next;
+
+    node.waitStatus = Node.CANCELLED;
+    if (node == tail && compareAndSwapTail(node, pred)) {
+        // predNext为CANCELLED，直接CAS置换掉
+        compareAndSetNext(pred, predNext, null);
+    } else {
+        int ws;
+        // 前驱节点不为队列头 && ( (前驱节点的等待状态为SIGNAL) || (前驱状态等待状态不为取消 && CAS设置前驱的状态为SIGNAL成功) ) && 前驱节点有绑定线程
+        if (pred != head && ((ws = pred.waitStatus) == Node.SIGNAL || (ws <= 0 && compareAndSetWaitStatus(pred, ws, Node.SIGNAL))) && pred.thread != null) {
+            Node next = node.next;
+            // next为取消状态的，就不要设置了
+            if (next != null && next.waitStatus <= 0) {
+                compareAndSetNext(pred, predNext, next);
+            }
+        } else {
+            // 前驱节点是头节点
+            unparkSuccessor(node);
+        }
+
+        node.next = node; // help GC
     }
 }
 ```
