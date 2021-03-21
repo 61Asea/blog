@@ -241,10 +241,10 @@ public abstract class AbstractQueuedSynchronizer {
         // 独占模式（各种锁）
         static final Node EXCLUSIVE = null;
 
-        static final int CANCELLED = 1;
-        static final int SIGNAL = -1;
-        static final int CONDITION = -2;
-        static final int PROPAGATE = -3;
+        static final int CANCELLED = 1; // 节点被取消，不再参与竞争锁
+        static final int SIGNAL = -1; // 表示该节点的next节点需要被唤醒
+        static final int CONDITION = -2; // 节点在等待队列里的状态
+        static final int PROPAGATE = -3; // 表示头结点将唤醒的动作传播下去
 
         volatile int waitStatus;
         volatile Node prev;
@@ -266,7 +266,7 @@ public abstract class AbstractQueuedSynchronizer {
 
 
 
-## **3. AQS关键操作**
+## **3. AQS的独占锁实现(EXCLUSIVE)**
 
 ### **3.1 获取资源的操作**
 
@@ -307,7 +307,7 @@ public final Node addWaiter(Node node) {
     return node;
 }
 
-// 进入同步队列
+// 进入同步队列（自旋 + CAS）
 private Node enq(final Node node) {
     for (;;) {
         Node t = tail;
@@ -332,7 +332,7 @@ private Node enq(final Node node) {
 
 synchronized加入同步队列后就使得线程挂起，而aqs会找到最前驱的节点，CAS设置其值为SIGNAL后，并最后尝试一次获取资源
 
-**若依旧获取不到资源，且状态仍为SIGNAL，则线程挂起**
+**若依旧获取不到资源，且最前驱节点的状态已经为SIGNAL（SIGNAL表示前驱节点的后续节点需要被唤醒），则线程可以安全地挂起**
 
     从效果上看，AQS本身并没有提供自旋机制，且挂起线程的内存语义与Synchronized相同
 
@@ -379,6 +379,8 @@ private static boolean shouldParkAfterFailedAcquire(Node pred, Node node) {
         do {
             node.prev = pred = pred.prev
         } while (pred.waitStatus > 0);
+
+        // 链表跳过前驱节点和当前线程节点中间那些失效的（取消状态）的节点
         pred.next = node;
     } else {
         compareAndSwapWaitStatus(pred, ws, Node.SIGNAL);
@@ -399,11 +401,11 @@ private void cancelAcquire(Node node) {
 
     node.thread = null;
 
-    // 找到当前需要取消节点的状态不为取消的前驱节点
+    // 找到当前需要取消节点的前驱节点（状态不为取消）
     Node pred = node.prev;
     while (pred.waitStatus > 0)
         node.prev = pred = pred.prev;
-    // 上面的while循环已经得到的是node之上，第一个不为CANCELLED的节点，所以predNext肯定为CANCELLED
+    // 上面的while循环已经得到的是node之前，第一个不为CANCELLED的节点，所以predNext肯定为CANCELLED
     Node predNext = pred.next;
 
     node.waitStatus = Node.CANCELLED;
@@ -420,14 +422,61 @@ private void cancelAcquire(Node node) {
                 compareAndSetNext(pred, predNext, next);
             }
         } else {
-            // 前驱节点是头节点
+            // 前驱节点是头节点，则唤醒node之后的一个不为取消状态的节点
             unparkSuccessor(node);
         }
 
         node.next = node; // help GC
     }
 }
+
+// 唤醒后续节点
+private void unparkSuccessor(Node node) {
+    int ws = node.waitStatus;
+    if (ws < 0) {
+        compareAndSetWaitStatus(node, ws, 0);
+    }
+
+    Node s = node.next;
+    if (s == null || s.waitStatus > 0) {
+        s = null;
+        for (Node t = tail; t != null && t != node; t = t.prev) {
+            if (t.waitStatus <= 0) {
+                s = t;
+            }
+        }
+    }
+
+    if (s != null) {
+        // 唤醒node节点之后，状态不为CANCELLED的节点线程
+        LockSupport.unpark(s.thread);
+    }
+}
 ```
+
+### **3.2 释放资源的操作**
+
+```java
+public final boolean release(int arg) {
+    if (tryRelease(arg)) {
+        Node h = head;
+        if (h != null && h.waitStatus != 0) {
+            // 唤醒头节点的后续节点线程
+            unparkSuccessor(h);
+        }
+        return true;
+    }
+    return false;
+}
+```
+
+### **3.3 公平锁和非公平锁的区别**
+
+1. 加锁的方式不同，非公平锁会直接先一个CAS设置独占线程，失败了再去acquire，而公平锁直接acquire，没有一次CAS
+
+2. 两者的tryAcquire方式略有不同，非公平锁使用了父类的nonfairTryAcquire方法，而公平锁则比nonfairTryAcquire方法多了一步从队列中取的操作，做到FIFO的效果
+
+## **4. AQS的共享实现（SHARED）**
 
 # 参考
 - [ReentrantLock.java]()
