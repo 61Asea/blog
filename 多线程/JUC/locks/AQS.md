@@ -264,11 +264,22 @@ public abstract class AbstractQueuedSynchronizer {
 
 ### **2.3 等待队列**
 
+条件队列都共用了Node内部类作为了节点，其中同步队列中用了Node类中的prev和next,等待队列中使用了nextWaiter
 
+AQS中的等待队列是由内部类ConditionObject(implements Condition)维护, 子类中实现了await开头的方法，signal开头的方法，其中以await开头都是将线程设置成等待状态
 
-## **3. AQS的独占锁实现(EXCLUSIVE)**
+```java
+/** First node of condition queue. */
+private transient Node firstWaiter;
+/** Last node of condition queue. */
+private transient Node lastWaiter;
+```
 
-### **3.1 获取资源的操作**
+## **3. AQS的独占(EXCLUSIVE)/共享(SHARED)**
+
+### **3.1 独占实现EXCLUSIVE**
+
+#### **3.1.1 获取资源的操作**
 
 1. acquire(int arg)
 
@@ -365,6 +376,15 @@ final boolean acquireQueued(final Node node, int arg) {
 ```
 
 ```java
+private void setHead(Node node) {
+    head = node;
+    // head节点只是索引，不关联任何线程
+    node.thread = null;
+    node.prev = null;
+}
+```
+
+```java
 private static boolean shouldParkAfterFailedAcquire(Node pred, Node node) {
     // 拿出前驱节点的状态
     int ws = pred.waitStatus;
@@ -454,7 +474,7 @@ private void unparkSuccessor(Node node) {
 }
 ```
 
-### **3.2 释放资源的操作**
+#### **3.1.2 释放资源的操作**
 
 ```java
 public final boolean release(int arg) {
@@ -470,17 +490,138 @@ public final boolean release(int arg) {
 }
 ```
 
-### **3.3 公平锁和非公平锁的区别**
+#### **3.1.3 公平锁和非公平锁的区别**
 
 1. 加锁的方式不同，非公平锁会直接先一个CAS设置独占线程，失败了再去acquire，而公平锁直接acquire，没有一次CAS
 
 2. 两者的tryAcquire方式略有不同，非公平锁使用了父类的nonfairTryAcquire方法，而公平锁则比nonfairTryAcquire方法多了一步从队列中取的操作，做到FIFO的效果
 
-## **4. AQS的共享实现（SHARED）**
+### **3.2. AQS的共享实现（SHARED）**
+
+共享实现与独占实现大同小异，共享状态获取的方法tryAcquireShared返回的是可用资源数量，而独占状态因为是独占属性，所以不需要返回可用资源数量（还有可用资源数量一定是0）
+
+对应到实现，共享相比于独占的差异在于以下两点:
+- 对tryAcquireShared()返回值的判断
+- 共享状态下对资源的成功获取或成功释放，都会唤醒后续的节点
+    如果尝试获取资源成功，在设置当前节点为头节点时，**需要顺带唤醒后续的共享节点**
+
+#### **3.2.1 获取共享同步状态的操作**
+
+1. acquireShared(int arg)
+
+```java
+public final void acquireShared(int arg) {
+    // <0 表示获取同步状态失败
+    if (tryAcquireShared(arg) < 0) {
+        doAcquireShared(arg);
+    }
+}
+```
+
+2. doAcquireShared(int arg)
+
+```java
+// 加入同步队列、挂起线程
+private void doAcquireShared(int arg) {
+    final Node node = addWaiter(Node.SHARED);
+    boolean failed = true;
+    try {
+        boolean interrupted = false;
+        for (;;) {
+            final Node p = node.predecessor();
+            if (p == head) {
+                // 不同于独占锁的tryAcquire方法返回布尔类型,此处表示当前可用的资源
+                int r = tryAcquireShared(arg);
+                if (r >= 0) {
+                    // 获取同步状态成功，修改头结点，并传递唤醒状态
+                    setHeadAndPropagate(node, r);
+                    p.next = null;
+                    if (interrupted)
+                        selfInterrupt();
+                    failed = false;
+                    return;
+                }
+            }
+
+            if (shouldParkAfterFailedAcquire(p, node) && parkAndCheckInterrupt()) {
+                interrupted = true;
+            }
+        }
+    } finally {
+        if (failed)
+            cancelAcquire(node);
+    }
+}
+```
+
+```java
+// 除了将头结点指向当前节点外，还需要唤醒下一个共享节点（而独占锁相当于propagate一直==0，所以无需唤醒）
+private void setHeadAndPropagate(Node node, int propagate) {
+    Node h = head; // 记录下旧的队列头
+    setHead(node); // 跟独占一样的设置队列头为当前node
+
+    // propagate == 0 表示没有资源可用了，所以不需要再唤醒后续的共享节点了
+    if (propagate > 0 || h == null || h.waitStatus < 0 || (h = head) == null || h.waitStatus < 0) {
+        Node s = node.next;
+        if (s == null || s.isShared())
+            // 唤醒后续节点
+            doReleaseShared();
+    }
+}
+```
+
+#### **3.2.2 释放共享同步状态的操作**
+
+1. releaseShared(int arg)
+```java
+public final boolean releaseShared(int arg) {
+    if (tryReleaseShared(arg)) {
+        // 释放同步状态成功后，通知后续节点
+        doReleaseShared();
+        return true;
+    }
+    return false;
+}
+```
+
+线程在获取共享锁和释放共享锁后，都会尝试唤醒后续节点，都调用了doReleaseShared()方法
+
+2. doReleaseShared()
+```java
+private void doReleaseShared() {
+    for (;;) {
+        Node h = head;
+        if (h != null && h != tail) {
+            int ws = h.waitStatus;
+            if (ws == Node.SIGNAL) {
+                if (!compareAndSetWaitStatus(h, Node.SIGNAL, 0))
+                    continue;
+                // 唤醒后继节点
+                unparkSuccessor(h);
+            }
+            else if (ws == 0 && !compareAndSetWaitStatus(h, 0, Node.PROPAGATE))
+                continue;
+        }
+
+        // 在上面唤醒了后续节点后，后续节点会尝试将自己变为头节点
+        if (h == head)
+            break;
+    }
+}
+```
+
+![](https://upload-images.jianshu.io/upload_images/19073098-cfe598718a9ec517.png?imageMogr2/auto-orient/strip|imageView2/2/w/1200/format/webp)
+
+## **4. 可中断/不可中断**
+
+
 
 # 参考
 - [ReentrantLock.java]()
 - [AbstractQueuedSynchronizer.java]()
+- [CountDownLatch.java]()
 - [Java多线程 J.U.C之locks框架：AQS综述](https://blog.csdn.net/wuxiaolongah/article/details/114435974)
 - [Java并发之 AQS 深入解析(上)](https://www.jianshu.com/p/62ed0767471e)
 - [Java并发之 AQS 深入解析(下)](https://www.jianshu.com/p/7a3033143802)
+- [线程中断 interrupt 和 LockSupport](https://blog.csdn.net/qq_26542493/article/details/104602385)
+- [并发系列(十)-----AQS详解等待队列](https://blog.csdn.net/MyPersonalSong/article/details/84386935)
