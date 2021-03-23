@@ -211,6 +211,10 @@ lock/tryLock(Lock接口) -> Sync的lock模板方法（NonfairSync/FairSync对loc
 
 ## **2. AQS关键数据结构**
 
+AQS的同步机制与Synchronized的机制类似，Synchronized的monitor拥有等待队列和同步队列，AQS也类似
+
+![](https://img-blog.csdnimg.cn/20190329234207496.jpg?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L2dzX2FsYmI=,size_16,color_FFFFFF,t_70)
+
 ### **2.1 Node**
 
 通过Unsafe类的objectFieldOffset()方法用于**获取某个字段相对Java对象的"起始地址"的偏移量**
@@ -260,9 +264,25 @@ public abstract class AbstractQueuedSynchronizer {
 
 ![同步队列](https://upload-images.jianshu.io/upload_iages/19073098-803c32a55e7816e3.png?imageMogr2/auto-orient/strip|imageView2/2/w/938/format/webp)
 
+1. 队列头
+
 头节点只起到索引作用，不关联任何线程，只有后驱节点
 
+    当node.prev == head时，相当于当前node处于队列头
+
+2. node.next == null
+
+node.next很可能为空，原因在于：
+- 在cancel的时候，如果发现下一个节点为取消状态，则不设置前驱节点的下一个节点
+- 在addWaiter的时候，在CAS设置前驱的next，可能出现并发问题，即其他线程遍历线程，得到pred.next == null的结果
+
+这也是使用unparkSuccessor，从队尾往队头遍历的方式的原因，目的是为了解决next指针不可靠的问题
+
 ### **2.3 等待队列**
+
+    AQS的等待队列，只在独占模式下使用，等待队列的接口方法只能在获得资源的时候使用
+
+在Object的监视器模型上，一个对象拥有一个同步队列与一个等待队列，而AQS拥有一个同步队列和**多个等待队列**
 
 条件队列都共用了Node内部类作为了节点，其中同步队列中用了Node类中的prev和next,等待队列中使用了nextWaiter
 
@@ -274,6 +294,8 @@ private transient Node firstWaiter;
 /** Last node of condition queue. */
 private transient Node lastWaiter;
 ```
+
+    具体的实现细节可见第6点等待/通知
 
 ## **3. AQS的独占(EXCLUSIVE)/共享(SHARED)**
 
@@ -411,8 +433,8 @@ private static boolean shouldParkAfterFailedAcquire(Node pred, Node node) {
 
 4. cancelAcquire(Node node)
 
-当获取同步状态发生异常时，需要取消线程竞争同步状态的操作
-当到达获取同步状态的超时时间，还无法获得同步状态，则调用该方法
+- 当获取同步状态发生异常时(被中断)，需要取消线程竞争同步状态的操作
+- 当到达获取同步状态的超时时间(超过传入的nanosTimeout)，还无法获得同步状态，则调用该方法
 
 ```java
 private void cancelAcquire(Node node) {
@@ -437,12 +459,12 @@ private void cancelAcquire(Node node) {
         // 前驱节点不为队列头 && ( (前驱节点的等待状态为SIGNAL) || (前驱状态等待状态不为取消 && CAS设置前驱的状态为SIGNAL成功) ) && 前驱节点有绑定线程
         if (pred != head && ((ws = pred.waitStatus) == Node.SIGNAL || (ws <= 0 && compareAndSetWaitStatus(pred, ws, Node.SIGNAL))) && pred.thread != null) {
             Node next = node.next;
-            // next为取消状态的，就不要设置了
+            // next为取消状态的，就不要设置了，在unparkSuccessor从队尾重新遍历，找到next进行唤醒(next指针可能指向为空)
             if (next != null && next.waitStatus <= 0) {
                 compareAndSetNext(pred, predNext, next);
             }
         } else {
-            // 前驱节点是头节点，则唤醒node之后的一个不为取消状态的节点
+            // 前驱节点是头节点，则唤醒node之后的一个不为取消状态的节点，唤醒后的节点会将自己再设置为头节点
             unparkSuccessor(node);
         }
 
@@ -450,7 +472,7 @@ private void cancelAcquire(Node node) {
     }
 }
 
-// 唤醒后续节点
+// 唤醒后续节点, 从队尾往前遍历（变相理解为竞争）
 private void unparkSuccessor(Node node) {
     int ws = node.waitStatus;
     if (ws < 0) {
@@ -614,7 +636,320 @@ private void doReleaseShared() {
 
 ## **4. 可中断/不可中断**
 
+![](https://upload-images.jianshu.io/upload_images/19073098-be2bf86aa0226191.png?imageMogr2/auto-orient/strip|imageView2/2/w/1200/format/webp)
 
+    不可中断：不改初衷，继续尝试获取锁，获取不到继续阻塞。不论C怎么中断，都无动于衷
+    可中断：检测中断是否发生了，若是发生了直接抛出异常(老子不干了，不再尝试获取锁)
+
+### **4.1 可中断的独占锁**
+
+- 在准备获取锁之前检测中断是否发生，若是则抛出异常并中断
+- 在被唤醒后检查是否中断已经发生，若是则直接抛出异常，中断获取锁的for循环
+
+```java
+public final void acquireInterruptibly(int arg) {
+    // 在没有处理中断异常时，不应该吞掉中断标识
+    if (Thread.interrupted())
+        // 将线程的中断标识重置为false，并向上抛出中断异常
+        throw new InterruptedException();
+    if (!tryAcquire(arg))
+        doAcquireInterruptibly(arg);
+}
+
+private void doAcquireInterruptibly(int arg) throw InterruptedException {
+    final Node node = addWaiter(Node.EXCLUSIVE);
+    boolean failed = false;
+    try {
+        for (;;) {
+            // ...
+            if (shouldParkAfterFailedAcquire(p, node) && parkAndChecktInterrupt())
+                // 此处处理了中断异常，所以在parkAndCheckInterrupt中可以清理线程的中断标识
+                throw new InterruptException();
+        }
+    } finally {
+        // ...
+    }
+}
+
+private void parkAndCheckInterrupt() {
+    // LockSupport.park的底层，发现当前线程的标识为true，则直接返回不挂起线程，所以线程想通过LockSupport.park进行挂起，标识位必须为false
+    LockSupport.park(this);
+
+    // thread.isInterrupted(true);
+    // 这里必须清理掉标识位。防止当再次获取资源失败时，使用LockSupport.park挂起线程时失败，导致空轮询浪费CPU
+    return Thread.interrupted();
+}
+```
+
+### **4.2 不可中断的独占锁**
+
+```java
+public void acquire(int arg) {
+    if (!tryAcquire(arg) && acquireQueued(addWaiter(Node.EXCLUEDE), arg))
+        // 自我中断，因为在acquireQueued中仅仅是记录了中断标记，需要在此处处理中断
+        selfInterrupted();
+}
+
+final boolean acquireQueued(final Node node, int arg) {
+    boolean failed = false;
+    try {
+        boolean interrupted = false;
+        for (;;) {
+            final Node p = node.predecessor();
+            if (p == head && tryAcquire(arg)) {
+                // ...
+                return interrupted;
+            }
+
+            if (shouldParkAfterFailedAcquire(p, node) && parkAndCheckInterrupt())
+                // 在此处并没有抛出异常, 只记录了interrupted（因为内层将中断标识清空了）
+                interrupted = true;
+        }
+    } finally {
+        // ...
+    }
+}
+```
+
+### **4.3 可中断的共享锁**
+
+与可中断独占锁逻辑一致
+
+### **4.4 不可中断的共享锁**
+
+共享锁的不可中断与独占锁一致，只是将自我中断的逻辑挪了个位置，不用传递标识位到最上层了
+
+```java
+private void doAcquireShared(int arg) {
+    final Node node = addWait(Node.SHARED);
+    boolean failed = false;
+    try {
+        boolean interrupted = false;
+        for (;;) {
+            final Node p = node.predecessor();
+            if (p == head) {
+                int r = tryAcquireShared(arg);
+                if (r >= 0) {
+                    // ...
+                    if (interrupted)
+                        // 直接在里层进行自我中断
+                        selfInterrupt();
+                }
+            }
+        }
+    } finally {
+        // ...
+    }
+}
+```
+
+## **5. 可限时/不可限时**
+
+### **5.1 不限时**
+
+- acquire(int arg) 
+    -> acquireQueued(Node node, int arg)
+    -> doAcquireInterruptibly(int arg)
+
+- acquireShared(int arg)
+    -> doAcquireShared(int arg)
+    -> doAcquireSharedInterruptibly(int arg)
+
+### **5.2 限时等待**
+
+- tryAcquireNanos(int arg, long nanosTimeout)
+- tryAcquireSharedNanos(int arg, long nanosTimeout)
+
+    吐槽下。。。其他模板方法又是以try开头的，结果限时方法也是以try开头，但又不是模板方法。。
+
+限时等待的唤醒方式有两种：
+- 上层调用该线程的中断方法
+- 挂起限时时间到达
+
+```java
+public final boolean tryAcquireNanos(int arg, long nanosTimeout) throws InterruptedException {
+    if (Thread.interrupted())
+        throw new InterruptedException();
+    return tryAcquire(arg) || doAcquireNanos(arg, nanosTimeout);
+}
+
+private boolean doAcquireNanos(int arg, long nanosTimeout) throws InterruptedException {
+    if (nanosTimeout <= 0L)
+        return false;
+    final long deadline = System.nanoTime() + nanosTimeout;
+    final Node node = addWaiter(Node.EXCLUSIVE);
+    boolean failed = false;
+    try {
+        for (;;) {
+            final Node p = node.predecessor();
+            if (p == head && tryAcquire(arg)) {
+                setHead(node);
+                p.next = null;
+                failed = false;
+                return true;
+            }
+
+            nanosTimeout = deadline - System.nanoTime();
+            if (nanosTimeout <= 0L) {
+                // 计算剩余的时间，时间耗尽则直接返回
+                return false;
+            }
+
+            if (shouldParkAfterFailedAcquire(p, node) && nanosTimeout > spinForTimeoutThreshold)
+                // 睡眠设定的时间后醒来
+                LockSupport.parkNanos(this, nanosTimeout);
+            if (Thread.interrupted())
+                throw new InterruptedException();
+        }
+    } finally {
+        // ...
+    }
+}
+```
+
+共享锁的限时等待与独占锁基本一致
+
+## **6. 等待/通知**
+
+![等待队列数据结构](https://upload-images.jianshu.io/upload_images/19073098-4c5c484ee688e0bd.png?imageMogr2/auto-orient/strip|imageView2/2/w/968/format/webp)
+
+在单纯地使用锁时，比如ReentrantLock，加锁、释放锁只是涉及到AQS中的同步队列
+
+当需要获得锁的线程需要暂时释放锁，可以使用Condition，此时才涉及到等待队列的概念，Condition的获取一般要与一个锁Lock相关，一个锁上面可以生产多个Condition
+
+### **6.1 Node**
+
+等待队列与同步队列共用Node结构，不同于同步队列的是，等待队列的节点使用nextWaiter指针指向下一个节点，且队列并非双向链表
+
+```java
+static final class Node {
+    static final Node SHARED = new Node();
+    static final Node EXCLUSIVE = null;
+    Node nextWaiter;
+    Thread thread;
+
+    Node(Thread thread, Node mode) { // Used by addWaiter
+        this.nextWaiter = mode;
+        this.thread = thread;
+    }
+}
+```
+
+### **6.2 ConditionObject**
+
+一个AQS可以对应多个ConditionObject
+
+```java
+public class ConditionObject implements Condition {
+    private transient Node firstWaiter;
+
+    private transient Node lastWaiter;
+
+    public void await() {
+        // 不限时等待
+    }
+
+    public void await(long time, TimeUnit timeUnit) {
+        // 限时等待，指定时间单位
+    }
+
+    public void awaitNanos(long nanosTimeout) {
+        // 限时等待，时间单位限定为纳秒
+    }
+
+    public void awaitUninterruptibly() {
+        // 不可中断的不限时等待
+    }
+
+    public void awaitUntil(Date deadline) {
+        // 限时等待,指定超时时间为未来的某个时间点
+    }
+
+    public void signal() {
+        // 通知等待队列里的节点
+    }
+
+    public void signalAll() {
+        // 通知等待队列里所有的节点
+    }
+}
+```
+
+获取到锁资源的线程如果需要等待条件满足，可以调用Condition实例的awaitXX(XX)方法进入等待队列中，并且释放锁资源
+
+其他线程在完成等待条件后，在锁内调用signalXX()通知线程A条件满足，线程A进入同步队列重新加入锁竞争
+
+### **6.3 conditionObject.await()**
+
+该方法应该在获取到独占锁资源内才可调用
+
+```java
+public final void await() throws InterruptedException {
+    if (Thread.interrupted())
+        throw new InterruptedException();
+    Node node = addConditionWaiter(); // (1)
+    int savedState = fullyRelease(node); // (2)
+    int interruptMode = 0;
+    while (!isOnSyncQueue(node)) { // (3)
+        LockSupport.park(this);
+        if ((interruptMode = checkInterruptWhileWaiting(node)) != 0) // (4)
+            break;
+    }
+    if (acquireQueued(node, savedState) && interruptMode != THROW_IE)
+        interrputMode = REINTERRUPT;
+    if (node.nextWaiter != null)
+        unlinkCancelledWaiters(); // (5)
+    if (interruptMode != 0)
+        reportInterruptAfterWait(interruptMode); // (6)
+}
+```
+
+1. addConditionWaiter()
+
+构造一个等待队列节点，**并添加到等待队列的队尾**
+
+```java
+private Node addContionWaiter() {
+    // 等待队列的队尾
+    Node t = lastWaiter;
+    if (t != null && t.waitStatus != Node.CONDITION) {
+        // 发现队尾节点的等待状态不为Condition，则遍历等待队列移除被取消的节点
+        unlinkCancelledWaiters();
+        t = lastWaiter;
+    }
+
+    // 构造等待队列的节点，使用Node(Thread thread, int waitStatus)构造器
+    Node node = new Node(Thread.currentThread(), Node.CONDITION);
+    if (t == null)
+        // 若队列为空，则头指针指向当前节点
+        firstWaiter = node;
+    else
+        t.nextWaiter = node;
+    // 尾指针指向尾节点
+    lastWaiter = node;
+    return node;
+}
+```
+
+2. fullyRelease(Node node)
+
+```java
+final int fullyRelease(Node node) {
+    boolean failed = true;
+    try {
+        int savedState = getState(); // 获得当前AQS的资源状态（一定是独占）
+        if (release(saveState)) { // 将独占的资源全部释放掉
+            failed = false;
+            return saveState;
+        } else {
+            // release返回false，说明这个同步器不是独占模式的（Semaphore）
+            throw new IllegalMonitorStateException();
+        }
+    }
+}
+```
+
+### **6.4 conditionObject.signal()**
 
 # 参考
 - [ReentrantLock.java]()
@@ -625,3 +960,4 @@ private void doReleaseShared() {
 - [Java并发之 AQS 深入解析(下)](https://www.jianshu.com/p/7a3033143802)
 - [线程中断 interrupt 和 LockSupport](https://blog.csdn.net/qq_26542493/article/details/104602385)
 - [并发系列(十)-----AQS详解等待队列](https://blog.csdn.net/MyPersonalSong/article/details/84386935)
+- [同步器AQS中的同步队列与等待队列](https://blog.csdn.net/gs_albb/article/details/88904205)
