@@ -6,6 +6,8 @@ AQS，抽象队列同步器，是JDK为”线程同步“提供了一套通用�
 
 基于它可以写出JAVA中的很多同步器类，如ReentrantLock、CountDownLatch、Semaphore、CyclicBarrier，这些同步器的主要区别就是对**同步状态（synchronization state）的定义不同**
 
+![AQS相关子类的分类](https://upload-images.jianshu.io/upload_images/19073098-f290953d9b6df0f2.png?imageMogr2/auto-orient/strip|imageView2/2/w/1200/format/webp)
+
 ![](https://upload-images.jianshu.io/upload_images/19073098-5277b2a012368215.png?imageMogr2/auto-orient/strip|imageView2/2/w/1200/format/webp)
 
 AQS是一种典型的模板方法设计模式，父类定义好骨架和内部操作细节，具体规则由子类去实现
@@ -1069,7 +1071,11 @@ final boolean transferForSignal(Node node) {
 
 2. unparkSuccessor(Node pred, Node node, int arg)
 
-    唤醒后续状态不为取消的节点，节点在被唤醒后会在acquiredQueued/doAcuqireInterruptibly/doAcquireShared/doAcquireSharedInterruptibly方法中重新获取资源，在成功获取资源后设置自己为head节点，即出队
+    唤醒后续状态不为取消的节点：
+    - **在共享锁下，获取/释放资源成功时，都会调用该方法**
+    - **在独占锁下，只有释放资源成功时，才会调用该方法**
+    
+    节点在被唤醒后会在acquiredQueued/doAcuqireInterruptibly/doAcquireShared/doAcquireSharedInterruptibly方法中重新获取资源，在成功获取资源后设置自己为head节点，即出队
 
 3. acquiredQueued/doAcuqireInterruptibly/doAcquireShared/doAcquireSharedInterruptibly
 
@@ -1084,6 +1090,83 @@ final boolean transferForSignal(Node node) {
     联动来实现等待/通知机制：
     1. await方法会在等待队列的节点出队并加入同步队列后，使用acquiredQueued驱动该节点的锁竞争
     2. 等待队列队头出队，并加入到同步队列的队尾
+
+6. PROPAGATE的作用
+
+PROPAGATE 在共享节点时才用得到，假设现在有4个线程、A、B、C、D，A/B 先尝试获取锁，没有成功则将自己挂起，C/D 释放锁
+
+此时同步队列：
+
+    head(SIGNAL) -> A(SIGNAL) -> B(0)
+
+可以参照Semaphore获取/释放锁流程
+
+1. C 释放锁后state=1，设置head.waitStatus=0，然后将A唤醒，A醒过来后调用tryAcquireShared(xx)，该方法返回r=0，此时state=0
+
+    此时同步队列：
+
+        head(0) -> A(SIGNAL) -> B(0) // A还在队列中，因为还没调用setHeadAndPropagate
+
+2. 在A还没调用setHeadAndPropagate(xx)之前，D 释放了锁，此时D调用doReleaseShared()，发现head.waitStatus==0，所以没有唤醒其它节点
+
+    此时同步队列：
+
+        head(0) -> A(SIGNAL) -> B(0)
+
+3. 此时A调用了setHeadAndPropagate(xx)，因为r==0且head.waitStatus== 0，因此不会调用doReleaseShared()，也就没有唤醒其它节点。最后导致的是B节点没有被唤醒
+
+    此时同步队列：
+
+        headA(SIGNAL) -> B(0)
+
+若是加了PROPAGATE状态，在上面的第2步骤里的D调用doReleaseShared()后，发现head.waitStatus==0，于是设置head.waitStatus=PROPAGATE，在第3步骤里，发现
+```java
+private void setHeadAndPropagate(Node node, int propagate) {
+    Node h = head; // Record old head for check below
+    setHead(node);
+
+    // 发现第三个条件h.waitStatus(PROPAGATE) < 0, 这个h是记录的旧h
+    if (propagate > 0 || h == null || h.waitStatus < 0 ||
+        (h = head) == null || h.waitStatus < 0) {
+        Node s = node.next;
+        if (s == null || s.isShared())
+            doReleaseShared();
+    }
+}
+```
+此时同步队列变为：
+
+    head(PROPAGATE) -> A(SIGNAL) -> B(0)
+    =>
+    headA(SIGNAL) -> B(0)
+
+于是在doReleaseShared中唤醒B
+
+```java
+private void doReleaseShared() {
+    for (;;) {
+        Node h = head;
+        if (h != null && h != tail) {
+            // 此时的h是在setHeadAndPropagate后的新head，他的状态是SIGNAL（在acquireShared方法的时候，被节点B设置为了SIGNAL）
+            int ws = h.waitStatus;
+            if (ws == Node.SIGNAL) {
+                if (!compareAndSetWaitStatus(h, Node.SIGNAL, 0))
+                    continue;            // loop to recheck cases
+                unparkSuccessor(h);
+            }
+            // ...
+        }
+    }
+}
+```
+最后同步队列变为：
+
+    headA(0) -> B(0)
+    =>
+    headA(PROPAGATE) -> B(0)
+
+虽然在第2步骤里没有唤醒任何线程，但是设置了PROPAGATE状态，在后续的步骤中发现已经设置了PROPAGATE，于是唤醒，这也是PROPAGATE名字的意义：传播
+
 
 # 参考
 - [ReentrantLock.java]()
