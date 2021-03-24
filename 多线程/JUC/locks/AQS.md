@@ -881,7 +881,12 @@ public class ConditionObject implements Condition {
 
 ### **6.3 conditionObject.await()**
 
-该方法应该在获取到独占锁资源内才可调用
+该方法**在获取到独占锁资源时才可调用**（这也意味着肯定不在同步队列中），当使用await时，会将其独占的资源释放掉，并加入等待队列的队尾
+
+- 释放独占资源
+- 加入等待队列的队尾
+- 挂起线程，等待中断或被其他线程signal唤醒
+- 唤醒后调用acquireQueued进入锁竞争
 
 ```java
 public final void await() throws InterruptedException {
@@ -933,6 +938,8 @@ private Node addContionWaiter() {
 
 2. fullyRelease(Node node)
 
+释放独占的所有资源
+
 ```java
 final int fullyRelease(Node node) {
     boolean failed = true;
@@ -949,7 +956,134 @@ final int fullyRelease(Node node) {
 }
 ```
 
+3. isOnSyncQueue(Node node)
+
+判断是否在同步队列中
+
+```java
+final boolean isOnSyncQueue(Node node) {
+    // node.prev == null, 一定不在同步队列了
+    if (node.waitStatus == Node.CONDITION || node.prev == null)
+        return false;
+
+    // If has successor, it must be on queue
+    if (node.next != null)
+        return true;
+
+    // 第一个if，node.prev不为空，第二个if，node.next为空，此时的node可能正处于addWaiter的CAS操作失败的情况，需要调用findNodeFromTail确保是否真的还在同步队列中（doSignal的enq方法）
+    return findNodeFromTail(node);
+}
+```
+
+4. checkInterruptWhileWaiting(Node node)
+
+检查在await的while期间，线程是否发生了中断，是的话需要记录中断位进行处理
+
+```java
+private int checkInterruptWhileWaiting(Node node) {
+    return Thread.interrupted() ? (transferAfterCancelledWait(node) ? THROW_IE : REINTERRUPT) : 0;
+}
+
+final boolean transferAfterCancelledWait(Node node) {
+    if (compareAndSetWaitStatus(node, Node.CONDITION, 0)) {
+        // CAS失败，说明还没有被signal，需要把异常再往上抛
+        enq(node);
+        return true;
+    }
+
+    // CAS成功，说明已经被其他线程signal了，需要返回中断标记，让外层决定如何处理
+    while (!isOnSyncQueue(node))
+        Thread.yield();
+    return false;
+}
+```
+
+5. unlinkCancelledWaiters()
+
+在没有signal的情况下，节点可能会因为中断而加入同步队列中，此时并未从等待队列中移除，需要删除一下
+
+6. reportInterruptAfterWait(int interruptMode) 
+```java
+private void reportInterruptAfterWait(int interruptMode) throws InterruptedException {
+    if (interruptMode == THROW_IE)
+        // 说明在await的while过程中被中断，且未被signal 
+        throw new InterruptedException();
+    else if (interruptMode == REINTERRUPT)
+        // 说明在await的while过程被中断，但已被signal / 在acquireQueued中被中断
+        selfInterrupt();
+}
+```
+
 ### **6.4 conditionObject.signal()**
+
+该方法只能在线程获取到**独占资源**时使用，会**唤醒等待队列的头节点**,
+并将该节点**加入到同步队列的队尾**
+
+- 等待队列队头出队
+- 节点加入到同步队列队尾
+- 若节点的前驱节点为取消状态，或修改前驱节点状态失败，则唤醒当前节点
+
+```java
+public final void signal() {
+    if (!isHeldExclusively())
+        throw new IllegalMonitorStateException();
+    Node first = firstWaiter;
+    if (first != null)
+        // 唤醒等待队列的第一个节点
+        doSignal(first);
+}
+
+private void doSignal(Node first) {
+    do {
+        // (firstWaiter = first.nextWaiter)从等待队列中出队
+        if ((firstWaiter = first.nextWaiter) == null)
+            // 如果队列只有一个节点，并且还被出队了，则把尾指针也置空
+            lastWaiter = null;
+        first.nextWaiter = null;
+    } while (!transferForSignal(first) && (first = firstWaiter) != null); // transferForSignal可能会失败，因为first节点可能在fullyRelease失败被取消，但fullyRelease方法的之前又将其加入了等待队列中
+}
+
+final boolean transferForSignal(Node node) {
+    // 在fullyRelease中失败了
+    if (!compareAndSetWaitStatus(node, Node.CONDITION, 0))
+        return false;
+
+    // 将该节点加入到同步队列的队尾,并返回前驱节点
+    Node p = enq(node);
+    int ws = p.waitStatus;
+    // 如果前驱节点为取消状态，或者前驱节点的状态设置为SIGNAL失败，将无法唤醒node的线程
+    if (ws > 0 || !compareAndSetWaitStatus(p, ws, Node.SIGNAL))
+        // 直接唤醒该节点
+        LockSupport.unpark(node.thread);
+    return true;
+}
+```
+
+### **7. 个人认为的重点**
+
+1. shouldParkAfterFailedAcquire(Node pred, Node node, int arg)
+
+    该方法出现的场景在各大获取资源的方法中，最重要的作用就是将前驱节点的状态设置为SIGNAL，使得release的时候，可以调用unparkSuccessor唤醒后续节点
+
+    另一个作用就是将线程挂起，避免空轮询操作
+
+2. unparkSuccessor(Node pred, Node node, int arg)
+
+    唤醒后续状态不为取消的节点，节点在被唤醒后会在acquiredQueued/doAcuqireInterruptibly/doAcquireShared/doAcquireSharedInterruptibly方法中重新获取资源，在成功获取资源后设置自己为head节点，即出队
+
+3. acquiredQueued/doAcuqireInterruptibly/doAcquireShared/doAcquireSharedInterruptibly
+
+    这几个方法就是acquire的核心，最主要的是是否要忽略中断，以及衍生出来的可不可限时方法
+
+4. release
+
+    释放资源，当节点的状态不等于0时（SIGNAL = -1）尝试唤醒后续节点，这个
+
+5. acquiredQueued和conditionObject.await(), enq和conditionObject.signal()方法的联动
+
+    联动来实现等待/通知机制：
+    1. await方法会在等待队列的节点出队并加入同步队列后，使用acquiredQueued驱动该节点的锁竞争
+    2. 等待队列队头出队，并加入到同步队列的队尾
 
 # 参考
 - [ReentrantLock.java]()
