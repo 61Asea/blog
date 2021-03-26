@@ -13,6 +13,8 @@ ReentrantLock(AbstractQueuedSynchronizer)是在JDK1.5中引入的，同时引入
 
     ReentrantLock经常与synchronized进行对比，本质上两者的内存语义，线程挂起方式一致，没有明确的数据/理论表明 ReentrantLock 比synchronized 更快
 
+独占锁锁定的标识：当前ExclusiveThread为自身，状态为1
+
 ## **1. 基础类与接口**
 
 ### **1.1 Lock**
@@ -50,7 +52,7 @@ public class ReentrantLock implements Lock, java.io.Serializable {
     }
 
     boolean tryLock(long time, TimeUnit unit) throws InterruptedException {
-        
+        sync.tryAcquireNanos
     }
 
     void unlock();
@@ -125,12 +127,18 @@ public class ReentrantLock implements Lock, java.io.Serializable {
 
 2. NonfairSync
 
-    非公平锁的实现
+    非公平锁的实现，非公平在于，调用该模块lock方法的线程，可能会抢先于同步队列队头的线程获得资源，对于同步队列队头的线程而言不公平
 
     ```java
         static final class NonfairSync extends Sync {
             final void lock() {
-
+                // CAS获取锁，此时可能锁刚释放，调用该方法的线程就取到了锁，而同步队列里的线程取不到锁继续等待
+                if (compareAndSetState(0, 1))
+                    // 成功则将自己设置为独占线程
+                    setExclusiveOwnerThread(Thread.currentThread());
+                else
+                    // 失败了，再加入到队列里面排队
+                    acquire(1);
             }
 
             protected final boolean tryAcquire(int acquires) {
@@ -139,10 +147,74 @@ public class ReentrantLock implements Lock, java.io.Serializable {
         }
     ```
 
+    一上来就开始抢占锁，失败后才开始判断是否有线程占有锁，没有人占有的话又开始抢占，这些抢占操作不成功才会进入同步队列阻塞等待别的线程释放锁
+    这也是非公平的特点：**不管是否有线程在排队等候锁，我就不排队，直接插队，实在不行才乖乖排队**
+
 3. FairSync
 
-## **2. 公平/非公平锁**
+    公平锁是相当于在同步队列中排队的第一个线程，调用该lock模块的线程，会先判断是否同步队列有排队的线程，如果没有的话才去获取资源，有的话则直接入队
+
+    ```java
+        static final class FairSync extends Sync {
+            final void lock() {
+                // 比非公平锁少了直接CAS的操作
+                acquire(1);
+            }
+
+            protected final boolean tryAcquire(int acquires) {
+                final Thread current = Thread.currentThread();
+                int c = getState();
+                if (c == 0) {
+                    // 在CAS之前先判断hasQueuedPredecessors，如果同步队列有其他线程排队的话，则加入到同步队列尾进行排队
+                    if (!hasQueuedPredecessors() && compareAndSetState(0, acquires)) {
+                        setExclusiveOwnerThread(current);
+                        return true;
+                    }
+                }
+                // ...
+            }
+        }
+    ```
+
+### **2. 公平/非公平**
+
+公平与非公平体现在获取锁时策略的不同：
+- 公平锁每次都会检查队列是否有节点等待，若没有则抢占锁，否则就去排队等候。
+- 非公平锁每次都会先去抢占锁，实在不行才排队
+- 公平锁、非公平锁在释放锁的逻辑上是一致的
+
+**非公平锁的重要特征**
+```java
+    public void lock() {
+        if (compareAndSetState(0, 1))
+            setExclusiveThread(Thread.currentThread());
+        else
+            acuiqre(1);
+    }
+```
+
+**公平锁的重要特征：**
+```java
+// AbstractQueuedSynchronizer.java
+// true则需要排队，false则不需要排队，具体断言可看参考的文档
+public final boolean hasQueuedPredecessors() {
+    Node t = tail; // Read fields in reverse 
+    Node h = head;
+    Node s;
+    return h != t &&
+        ((s = h.next) == null || s.thread != Thread.currentThread());
+}
+```
+
+### **3. 可中断/不可中断**
+
+借助AQS完成该功能
+
+    若是线程在同步队列中等待，外界调用了该线程的Thread.interrupt()方法，结果就是被中断的线程被唤醒，放弃获取锁，并抛出中断异常
+
+### ****
 
 # 参考
 - [AQS.md](https://github.com/61Asea/blog/blob/master/%E5%A4%9A%E7%BA%BF%E7%A8%8B/JUC/locks/AQS.md)
 - [Java 并发之 ReentrantLock 深入分析(与Synchronized区别)](https://www.jianshu.com/p/dcabdf695557)
+- [AQS-hasQueuedPredecessors()解析](https://blog.csdn.net/weixin_38106322/article/details/107154961)
