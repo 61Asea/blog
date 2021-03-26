@@ -212,7 +212,26 @@ public final boolean hasQueuedPredecessors() {
 
     若是线程在同步队列中等待，外界调用了该线程的Thread.interrupt()方法，结果就是被中断的线程被唤醒，放弃获取锁，并抛出中断异常
 
-### ****
+### **4. 可限时/不可限时**
+
+在synchronized和ReentrantLock.lock()中，万一锁被别的线程占有了，当前线程就会阻塞住。tryLock()可尝试一次获取锁，若不成功，不去排队
+
+```java
+// ReentrantLock.java
+public boolean tryLock() {
+    return sync.nonfairTryAcquire(1);
+}
+```
+
+排队也可接受，但是需要限时，则通过AQS的tryAcquireNanos方法，当时间到了还未获取到锁，则直接退出争取流程
+```java
+// ReentrantLock.java
+public boolean tryLock(long timeout, TimeUnit unit) {
+    return sync.tryAcquireNanos(1, unit.toNanos(timeout));
+}
+```
+
+### **5. 等待/通知**
 
 # 参考
 - [AQS.md](https://github.com/61Asea/blog/blob/master/%E5%A4%9A%E7%BA%BF%E7%A8%8B/JUC/locks/AQS.md)
