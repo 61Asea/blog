@@ -233,6 +233,125 @@ public boolean tryLock(long timeout, TimeUnit unit) {
 
 ### **5. 等待/通知**
 
+等待与通知机制，基于AQS的等待队列ConditionObject，该队列是**单向链表，节点在调用await()从队尾加入，被其他线程signal或中断时从队头出队**
+
+```java
+    // ReentrantLock.java
+    public Condition newCondition() {
+        return sync.newCondition();
+    }
+
+    // Sync.java
+    final ConditionObject newConition() {
+        return new ContionObject();
+    }
+```
+
+```java
+public class ConditionDemo {
+    public static ReentrantLock lock = new ReentrantLock();
+
+    public static Condition condition = lock.newCondition();
+
+    public static Runnable asyncTask = new Thread(() -> {
+        try {
+            // 获取不到锁时，阻塞住
+            lock.lock();
+            // 主线程调用await方法，释放资源，异步线程获得资源并执行唤醒，将主线程加入到同步队列中
+            condition.signalAll();
+        } finally {
+            lock.unlock();
+        }
+    });
+
+    public static void main(String[] args) {
+        try {
+            lock.lock();
+            asyncTask.run();
+            condition.await();
+            System.out.println("main thread was signed by async Thread");
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        } finally {
+            lock.unlock();
+        }
+    }
+}
+```
+
+## **6. ReentrantLock与Synchronized的对比（转载参考的第二篇文章）**
+
+### **6.1 基本结构**
+
+    都包含了CAS操作，数据结构：同步队列 + 等待队列（等待/通知）
+
+### **6.2 功能差异**
+
+1. 相同功能
+
+    - 都能实现独占
+    - 都能实现非公平锁
+    - 都能实现可重入性
+    - 都能实现不可中断锁
+    - 都是悲观锁（Synchronized在1.6优化后在重量级锁下为悲观锁）
+
+2 不同功能
+
+    1. 实现方式
+
+        - synchronized是关键字，具体实现在JVM层面上；ReentrantLock是JDK实现上的锁
+        - synchronized保护的方法/代码块发生异常会自动释放锁，ReentrantLock保护的代码块发生异常不会释放，**必须在finally中主动释放锁**
+
+    2. ReentrantLock提供的更多功能
+
+        - 公平锁
+        - 可中断锁
+        - 限时等待锁，超时则放弃锁竞争
+        - 单次获取，检测当前锁是否被占用
+        - 绑定多个等待队列，而synchronized只有monitor的一个等待队列
+        - 能够获取更多同步队列、等待队列的详情
+
+### **6.3 性能区别**
+
+    很多文章说："synchronized 使用了mutex，陷入内核态，而ReentrantLock 使用CAS，是CPU的特殊指令云云"，由此证明synchronized 更耗性能
+
+### **6.3.1. 线程模式**
+
+1. synchronized
+
+    Synchronized在偏向锁/轻量锁会通过CAS或CAS自旋来确保线程不会立即挂起，当膨胀为重量级锁时，才会将线程加入到同步队列中等待锁竞争
+
+    重量级锁挂起方式：
+        
+        ParkEvent.park() -> NPTL.pthread_cond_wait(xx)
+
+        NPTL是Linux glibc下实现的，用的是futex
+
+    CAS/CAS自旋方式：
+    
+        Atomic::cmpxchg_ptr(xx) （C++实现的语义）
+        
+        因为synchronized本身就是C++实现的，直接调用了Atomic
+
+2. ReentrantLock
+
+    ReentrantLock的大部分操作都通过Unsafe.CAS来确定线程是否要挂起与唤醒（整个过程没有使用到自旋，自旋只在enq方法加入同步队列时使用），当竞争失败时，也会将线程挂起
+
+        ReentrantLock挂起方式:
+
+            AQS -> LockSupport.park() -> unsafe.park() -> Parker.park(xx) -> NPTL.pthread_cond_wait(xx)
+
+        CAS方式：
+
+            unsafe.compareAndSwapInt(xx) -> Atomic::cmpxchg_ptr(xx)
+
+
+可以看出，两种锁在一直竞争不到资源的情况下：
+
+- 线程都会在最后进入到阻塞态挂起
+- CAS与线程挂起的内存语义一致
+- 唯一两者的不同点在于synchronized优化，膨胀到轻量级锁时会使用自旋CAS的方式尽量避免线程挂起，但是内置锁膨胀有开销，比如：锁记录的变化修改
+
 # 参考
 - [AQS.md](https://github.com/61Asea/blog/blob/master/%E5%A4%9A%E7%BA%BF%E7%A8%8B/JUC/locks/AQS.md)
 - [Java 并发之 ReentrantLock 深入分析(与Synchronized区别)](https://www.jianshu.com/p/dcabdf695557)
