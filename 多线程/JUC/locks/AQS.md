@@ -307,69 +307,70 @@ private transient Node lastWaiter;
 
 1. acquire(int arg)
 
-```java
-// AQS.java
-public final void acquire(int arg) {
-    if (!tryAcquire(arg) && acquireQueued(addWaiter(Node.EXCLUSIVE), arg))
-        selfInterrupt();
-}
-```
+    ```java
+    // AQS.java
+    public final void acquire(int arg) {
+        if (!tryAcquire(arg) && acquireQueued(addWaiter(Node.EXCLUSIVE), arg))
+            selfInterrupt();
+    }
+    ```
 
-- arg：在不同的同步器实现有不同含义，具体可见上文表格
-- tryAcquire：实现子类定义具体的获取同步状态操作
-- addWaiter: 将当前线程封装到Node中，并**加入同步队列中**
-- acquireQueued：符合条件下，竞争失败，则挂起线程
-- selfInterrupt: 防止线程循环空操作，增加CPU压力
+    - arg：在不同的同步器实现有不同含义，具体可见上文表格
+    - tryAcquire：实现子类定义具体的获取同步状态操作
+    - addWaiter: 将当前线程封装到Node中，并**加入同步队列中**
+    - acquireQueued：符合条件下，竞争失败，则挂起线程
+    - selfInterrupt: 防止线程循环空操作，增加CPU压力
 
 2. addWaiter(Node node)
 
-**新增加节点到同步队列**，同步队列的头节点不关联任何线程，仅作为索引使用，在enq(Node node)方法中初始化
+    **新增加节点到同步队列**，同步队列的头节点不关联任何线程，仅作为索引使用，在enq(Node node)方法中初始化
 
-```java
-public final Node addWaiter(Node node) {
-    Node node = new Node(Thread.currentThread(), mode);
-    Node pred = tail;
-    if (pred != null) {
-        node.prev = tail;
-        if (compareAndSetTail(pred, node)) {
-            // CAS操作，替换掉tail位置的node为当前node
-            pred.next = node;
-            return node;
+    ```java
+    public final Node addWaiter(Node node) {
+        Node node = new Node(Thread.currentThread(), mode);
+        Node pred = tail;
+        if (pred != null) {
+            node.prev = tail;
+            if (compareAndSetTail(pred, node)) {
+                // CAS操作，替换掉tail位置的node为当前node
+                pred.next = node;
+                return node;
+            }
         }
+        // 失败了则进入死循环，必须成功为止
+        enq(node);
+        return node;
     }
-    // 失败了则进入死循环，必须成功为止
-    enq(node);
-    return node;
-}
 
-// 进入同步队列（自旋 + CAS）
-private Node enq(final Node node) {
-    for (;;) {
-        Node t = tail;
-        if (t == null) {
-            // 如果列表为空，则初始化，再重新进入for循环
-            if (compareAndSwapHead(new Node()))
-                tail = head;
-        } else {
-            node.prev = t;
-            // CAS操作替换尾节点，失败则重新进入for循环
-            if (compareAndSwapTail(t, node)) {
-                // 成功，设置之前的尾节点的next为node
-                t.next = node;
-                return t;
+    // 进入同步队列（自旋 + CAS）
+    private Node enq(final Node node) {
+        for (;;) {
+            Node t = tail;
+            if (t == null) {
+                // 如果列表为空，则初始化，再重新进入for循环
+                if (compareAndSwapHead(new Node()))
+                    tail = head;
+            } else {
+                node.prev = t;
+                // CAS操作替换尾节点，失败则重新进入for循环
+                if (compareAndSwapTail(t, node)) {
+                    // 成功，设置之前的尾节点的next为node
+                    t.next = node;
+                    return t;
+                }
             }
         }
     }
-}
-```
+    ```
 
 3. acquireQueued(final Node node, int arg)
 
-synchronized加入同步队列后就使得线程挂起，而aqs会找到最前驱的节点，CAS设置其值为SIGNAL后，并最后尝试一次获取资源
+    synchronized加入同步队列后就使得线程挂起，而aqs会找到最前驱的节点，CAS设置其值为SIGNAL后，并最后尝试一次获取资源
 
-**若依旧获取不到资源，且最前驱节点的状态已经为SIGNAL（SIGNAL表示前驱节点的后续节点需要被唤醒），则线程可以安全地挂起**
+    **若依旧获取不到资源，且最前驱节点的状态已经为SIGNAL（SIGNAL表示前驱节点的后续节点需要被唤醒），则线程可以安全地挂起**
 
-    从效果上看，AQS本身并没有提供自旋机制，且挂起线程的内存语义与Synchronized相同
+
+从效果上看，AQS本身并没有提供自旋机制，且挂起线程的内存语义与Synchronized相同
 
 ```java
 final boolean acquireQueued(final Node node, int arg) {
@@ -530,6 +531,10 @@ public final boolean release(int arg) {
     如果尝试获取资源成功，在设置当前节点为头节点时，**需要顺带唤醒后续的共享节点**
 
 #### **3.2.1 获取共享同步状态的操作**
+
+该方法是核心，不止在释放资源时才会唤醒后续节点，在获取资源的时候也会
+
+所以在拥有足够的资源之下，一个节点的唤醒并成功获取资源会引发对下一个节点的唤醒，直至资源 == 0为止
 
 1. acquireShared(int arg)
 
@@ -1095,25 +1100,27 @@ final boolean transferForSignal(Node node) {
 
 PROPAGATE 在共享节点时才用得到，假设现在有4个线程、A、B、C、D，A/B 先尝试获取锁，没有成功则将自己挂起，C/D 释放锁
 
+    注意：共享锁的唤醒和释放，都需要唤醒后续的节点，当被唤醒的节点获取资源后，会接着唤醒下一个节点，做到传播的效果
+
 此时同步队列：
 
     head(SIGNAL) -> A(SIGNAL) -> B(0)
 
 可以参照Semaphore获取/释放锁流程
 
-1. C 释放锁后state=1，设置head.waitStatus=0，然后将A唤醒，A醒过来后调用tryAcquireShared(xx)，该方法返回r=0，此时state=0
+1. C 释放锁后state=1，设置head.waitStatus=0，然后将A唤醒，A醒过来后调用tryAcquireShared(xx)，该方法返回r=0(剩余许可证数)，此时aqs.state=0(semaphore的许可证数)
 
     此时同步队列：
 
         head(0) -> A(SIGNAL) -> B(0) // A还在队列中，因为还没调用setHeadAndPropagate
 
-2. 在A还没调用setHeadAndPropagate(xx)之前，D 释放了锁，此时D调用doReleaseShared()，发现head.waitStatus==0，所以没有唤醒其它节点
+2. 在A还没调用setHeadAndPropagate(xx)之前，D 释放锁，此时D调用doReleaseShared()，发现head.waitStatus==0，所以没有唤醒其它节点
 
     此时同步队列：
 
         head(0) -> A(SIGNAL) -> B(0)
 
-3. 此时A调用了setHeadAndPropagate(xx)，因为r==0且head.waitStatus== 0，因此不会调用doReleaseShared()，也就没有唤醒其它节点。最后导致的是B节点没有被唤醒
+3. 此时A调用了setHeadAndPropagate(xx)，因为r==0且head.waitStatus== 0，因此不会调用doReleaseShared()，也就没有唤醒其它节点。最后导致的是B节点没有被唤醒，只有等到A释放锁时再进行唤醒了
 
     此时同步队列：
 
