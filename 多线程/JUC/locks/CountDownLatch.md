@@ -1,6 +1,12 @@
 # CountDownLatch
 
-## **1. Sync extends AQS**
+又称为闭锁，一般拿来与栅栏做对比，经典比喻场景：多个运动员，一个裁判，裁判倒计时完成后，多个运动员才可以进行赛跑
+
+## **1. 闭锁的state**
+
+state在闭锁初始化的时候被构造器传入的值一同初始化，期间运动员（调用await的线程）无法对state操作，只有裁判（调用countDown的线程）可以操作state
+
+## **2. Sync extends AQS**
 
 ```java
 public CountDownLatch {
@@ -33,7 +39,7 @@ public CountDownLatch {
 }
 ```
 
-## **2. CountDownLatch**
+## **3. CountDownLatch**
 
 调用该方法后，会直接进入同步队列，不会去获取资源
 
