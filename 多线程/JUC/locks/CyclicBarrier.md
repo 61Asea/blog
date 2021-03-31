@@ -7,9 +7,11 @@
 - 每个人到达集合点时，就看看人齐了没，没有则等待
 - 若最后一个参与者过来发现人也齐了，于是唤醒其他的全部人，一起出发
 
+![](https://img-blog.csdnimg.cn/20201229140729713.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3UwMTMxNjEyNzg=,size_16,color_FFFFFF,t_70)
+
 ## **1. 栅栏的state**
 
-与其他的同步器直接组合aqs实现子类相比，栅栏组合了可重入锁的独占性质，来协调其他线程进行等待
+与其他的同步器直接组合aqs实现子类相比，栅栏组合了可重入锁，利用其独占性质来协调其他线程进行等待
 
     没有直接修改state，CyclicBarrier是通过ReentrantLock + Condition来实现线程间同步的
 
@@ -49,8 +51,31 @@ public class CyclicBarrier {
     }
 }
 ```
+### **2.1 迭代**
 
-### **2.1 获取资源**
+Generation是CyclicBarrier的内部静态类，描述了CyclicBarrier的**更新换代**。在CyclicBarrier中，**同一批线程属于同一代**，当有parties个线程全部到达barrier时，generation就会更新为下一个迭代
+
+其内部属性broken，记录的是当前迭代是否已经出现失效问题
+
+```java
+private static class Generation {
+    boolean broken = false;
+}
+```
+
+迭代失效/损坏栅栏(g.broken == true)的四种情况：
+
+1. 在barrier等待中的某个线程被中断，中断的线程将将栅栏损坏(g.broken = true)，其他所有线程被唤醒，并检测到损坏，抛出BrokenBarrierException
+
+2. 外部线程调用了reset()方法重置栅栏，则栅栏的全部线程都将抛出BrokenBarrierException
+
+3. 超时机制下，当加入等待队列的线程限时唤醒后，发现栅栏已经超时，则损坏栅栏
+
+4. 最后一个线程在执行传入栅栏的回调方法执行出现异常，则损坏栅栏，并唤醒其他所有线程
+
+### **2.2 获取独占资源**
+
+每一个调用CyclicBarrier的await方法的线程，都会在一开始获得独占锁，并且判断是否参与者已经到齐，没有则将自身加入到等待队列；有则唤醒其他线程，并重置栅栏到下一个迭代
 
 ```java
 public int await() {
@@ -67,11 +92,14 @@ private int dowait(boolean timed, long nanos) {
     lock.lock();
 
     try {
+        // 获取当前栅栏的迭代
         final Generation g = generation;
 
+        // 当前栅栏处于损坏状态（如果有线程处于等待状态，其他线程调用reset()方法，则在reset中调用breakBarrier打破栅栏）
         if (g.broken)
             throw new BrokenBarrierException();
 
+        // 中断，其他线程抛出BrokenBarrierException
         if (Thread.interrupted()) {
             breakBarrier();
             throw new InterruptedException();
@@ -108,6 +136,7 @@ private int dowait(boolean timed, long nanos) {
                     // 限期挂起, awaitNanos会返回剩余的nanos
                     nanos = trip.awaitNanos(nanos);
             } catch (InterruptedException ie) {
+                // 等待过程中被其他线程中断
                 if (g == generation && !g.broken) {
                     // 仍然是同一个栅栏内，并且该迭代未被broken过
                     // 在等待期间被其他线程打断，则毁掉栅栏，并往上抛出异常
@@ -118,9 +147,11 @@ private int dowait(boolean timed, long nanos) {
                 }
             }
 
+            // 被唤醒后，发现栅栏已经坏了，则抛出异常
             if (g.broken)
                 throw new BrokenBarrierException();
 
+            // 被唤醒后，发现栅栏已经迭代，当前线程不是这一批次的了
             if (g != generation)
                 return index;
 
@@ -131,7 +162,32 @@ private int dowait(boolean timed, long nanos) {
             }
         }
     } finally {
+        // 以上流程完成，解锁
         lock.unlock();
     }
 } 
 ```
+
+### **2.3 重置**
+
+```java
+public void reset() {
+    final ReentrantLock lock = this.lock;
+    lock.lock();
+    try {
+        // 立即损坏栅栏，并唤醒在当前迭代等待的所有线程
+        breakBarrier();
+
+        // 转入到下一个迭代中
+        nextGeneration();
+    } finally {
+        lock.unlock();
+    }
+}
+```
+
+### **3. DEMO**
+
+# 参考
+- [CyclicBarrier原理剖析](https://blog.csdn.net/u013161278/article/details/111881393)
+- [Java Semaphore/CountDownLatch/CyclicBarrier 深入解析(原理篇)](https://www.jianshu.com/p/4556f0f3b9cb)

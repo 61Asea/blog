@@ -138,8 +138,11 @@ final class Sync extends AbstractQueuedSynchronizer {
 
     // 当前线程持有的可重入读取锁数，每当线程的读保持数下降至0，则删除
     private transient ThreadLocalHoldCounter readHolds;
+    // 最后一个获取到读锁的线程计数器，每当有新的线程获取到读锁，这个变量都会更新，这个变量的目的是为了：当最后一个获取读锁的线程重复获取读锁，或者释放读锁，则直接使用这个变量，速度更快，相当于缓存
     private transient HoldCounter cachedHoldCounter;
+    // 是获取读锁的第一个线程，如果只有一个线程获取读锁，使用这样一个变量速度更快
     private transient Thread firstReader = null;
+    // firstReader的计数器
     private transient int firstReaderHoldCount;
 
     Sync() {
@@ -160,6 +163,8 @@ final class Sync extends AbstractQueuedSynchronizer {
 ### **2.2.1 获取读资源**
 
 #### **2.2.1.1 tryAcquireShared（重点）**
+
+![获取读锁的流程](https://upload-images.jianshu.io/upload_images/4236553-c747934c55844272.png?imageMogr2/auto-orient/strip|imageView2/2/w/1200/format/webp)
 
 获取读锁的模板方法，当写锁被其他线程占用（写操作），会阻塞读锁的获取（读操作）
 
@@ -235,8 +240,9 @@ final int fullTryAcquireShared(Thread current) {
         } 
         // 条件1
         else if (readerShouldBlock()) {
+            // 这里处理的是当前线程的读锁重入，出现的情况可能为：当前线程已持有读锁，需要重入，但是在上层readerShouldBlock()阻塞，则进入到这里重新判断（只有新加入的读程需要考虑写线程的饥饿问题）
             if (firstReader == current) {
-
+                // 读锁重入，可以直接走到下面的CAS
             } else {
                 if (rh == null) {
                     rh = cachedHoldCounter;
@@ -248,6 +254,7 @@ final int fullTryAcquireShared(Thread current) {
                 }
                 if (rh.count == 0)
                     return -1;
+                // 如果当前线程 != 0，则说明当前线程已经占有了读锁，可重入
             }
         }
 
@@ -517,7 +524,24 @@ final boolean tryWriterLock() {
 }
 ```
 
-## **3. demo**
+## **3. 锁降级**
+
+    锁降级(写锁进程的重入性)：
+    如果不支持降级，写锁占用的线程，需要释放写锁后，才能获取读取锁，否则会进入死锁
+    
+    而为了线程安全性，在释放写锁后，如果为了保证该线程串行化获得读锁，需要保证其他线程不会抢夺写锁；或者没有这个需求，也会引起线程对锁的争夺和线程唤醒上下文切换，这都将引入其他的性能效率问题。
+    
+    所以为了效率，降级的实现方式如下：
+    
+        先获取写入锁，然后获取读取锁，最后释放写入锁
+
+    注意：重入允许从写入锁降级为读取锁，但是，从读取锁升级到写入锁是不可能的
+
+![锁降级](https://upload-images.jianshu.io/upload_images/4236553-f545a504abde8c2f.png?imageMogr2/auto-orient/strip|imageView2/2/w/1200/format/webp)
+
+总的来说，锁降级就是写锁线程的一种特殊的锁重入机制
+
+## **4. demo**
 
 ```java
 public class ReadWriteDemo {
@@ -643,3 +667,4 @@ write thread 4 release write lock remain write count:0
 # 参考
 - [移位、原码、反码和补码](https://blog.csdn.net/qq_41135254/article/details/97750382)
 - [Java 并发之 ReentrantReadWriteLock 深入分析](https://www.jianshu.com/p/c4af8c70ff99)
+- [并发编程之——读锁源码分析(解释关于锁降级的争议)](https://www.jianshu.com/p/cd485e16456e)
