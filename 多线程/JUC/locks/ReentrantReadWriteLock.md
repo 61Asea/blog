@@ -665,6 +665,7 @@ write thread 4 release write lock remain write count:0
     [] [] []
 
 # 参考
-- [移位、原码、反码和补码](https://blog.csdn.net/qq_41135254/article/details/97750382)
+- [移位](https://blog.csdn.net/qq_41135254/article/details/97750382)
+- [原码/反码/补码](https://zhuanlan.zhihu.com/p/91967268)
 - [Java 并发之 ReentrantReadWriteLock 深入分析](https://www.jianshu.com/p/c4af8c70ff99)
 - [并发编程之——读锁源码分析(解释关于锁降级的争议)](https://www.jianshu.com/p/cd485e16456e)
