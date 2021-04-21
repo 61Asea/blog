@@ -1,26 +1,9 @@
 # ThreadPoolExecutor
 
-该类是整个线程池实现的核心
+该类是整个线程池实现的核心，Executors通过固定参数填充ThreadPoolExecutor来创建4种线程池技术，开发者也可以直接通过ThreadPoolExecutor自定义线程池
 
-## **1. 基本结构**
+## **1.池状态**
 
-ThreadPoolExecutor用一个int类型来表示当前线程池的**运行状态**和**线程有效数量**
-
-需要重写:
-
-Executor.execute(Runnable)
-ExecutorService.shutdown()
-ExecutorService.shutdownNow()
-ExecutorService.isShutdown()
-ExecutorService.isTerminated()
-ExecutorService.awaitTermination(long, TimeUnit)
-
-并另外提供了：
-1. 线程池管理（忙时拒绝策略/线程创建（线程工厂））
-2. 工作线程
-3. 任务队列
-
-线程池类成员如下：
 ```java
 public class ThreadPoolExecutor extends AbstractExecutorService {
     // 高3位表示线程池的运行状态，低29位表示线程有效数量
@@ -64,7 +47,77 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
     private static int ctlOf(int rs, int wc) {
         return rs | wc;
     }
+}
+```
 
+### **1.1 状态介绍**
+
+与线程的状态相似，线程池也有自己的状态，被存储在一个整型的高3位上
+
+- RUNNING
+
+    一旦被创建，初始化状态是RUNNING，线程池中的任务数为0
+    该状态接受新的任务，处理等待队列中的任务
+
+- SHUTDOWN
+
+    不接受新的任务提交，会继续处理等待队列中的任务
+
+- STOP
+
+    不接受新的任务提交，不再处理等待队列中的任务，中断正在执行任务的线程
+
+- TIDYING
+
+    所有的任务都被销毁了，工作线程为0，线程池的状态在转换为TIDYING时，会执行钩子方法terminated()，该方法在父类是空的，用户可以通过重载terminiated来实现自定义处理TIDYING转化处理
+
+- TERMINATED
+
+    线程池处于TIDYING时，执行完terminated后，就会由TIDYING转换为TERMINATED
+
+### **1.2 状态更迭**
+
+1. RUNNING -> SHUTDOWN
+
+    调用pool.shutdown()方法，线程池会由RUNNING转变为SHUTDOWN，此时仍然会处理任务队列
+
+2. (RUNNING or SHUTDOWN) -> STOP
+
+    调用pool.shutdownNow()方法，池在RUNNING或SHUTDOWN状态下，会转变为STOP。此时不会处理任务队列的任务，并中断正在执行任务的线程，返回未完成的任务
+
+3. SHUTDOWN -> TYDING
+
+    任务队列的任务处理完毕，并且池空（工作线程数量为0）
+
+4. STOP -> TYDING
+
+    池空
+
+5. TYDING -> TERMINATED
+
+    执行完terminated()钩子方法后，池就会由TYDING更迭为TERMINATED状态
+
+## **2. 基本结构**
+
+ThreadPoolExecutor用一个int类型来表示当前线程池的**运行状态**和**线程有效数量**
+
+需要重写:
+
+Executor.execute(Runnable)
+ExecutorService.shutdown()
+ExecutorService.shutdownNow()
+ExecutorService.isShutdown()
+ExecutorService.isTerminated()
+ExecutorService.awaitTermination(long, TimeUnit)
+
+并另外提供了：
+1. 线程池管理（忙时拒绝策略/线程创建（线程工厂））
+2. 工作线程
+3. 任务队列
+
+线程池类成员如下：
+```java
+public class ThreadPoolExecutor extends AbstractExecutorService {
     // 线程池独占锁，在关闭线程池/新增工作线程时使用
     private final ReentrantLock mainLock = new ReentrantLock();
     private final Condition termination = mainLock.getCondition();
@@ -109,7 +162,7 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
 }
 ```
 
-### **1.1 关键参数**
+### **2.1 关键参数**
 
 **corePoolSize和maxiumPoolSize**
 
@@ -148,7 +201,7 @@ true时，超过core数目的线程在keepAliveTime后将被释放；false时，
 
 可以参照Executors工具类，默认都使用忙时拒绝策略，可传入线程工厂
 
-### **1.2 构造函数**
+### **2.2 构造函数**
 
 ```java
 public static ExecutorService newCachedThreadPool() {
@@ -183,13 +236,13 @@ public ThreadPoolExecutor(int corePoolSize, int maxiumPoolSize, long keepAliveTi
 }
 ```
 
-### **1.3 Worker**
+### **2.3 Worker**
 
-## **2. 关键行为**
+## **3. 关键行为**
 
-### **2.1 线程池管理**
+### **3.1 线程池管理**
 
-#### **2.1.1 excute方法**
+#### **3.1.1 excute方法**
 
 重写了最上层接口Executor.excute方法，道格李在注释中写出了执行的三个步骤：
 
@@ -229,7 +282,7 @@ public void execute(Runnable command) {
 }
 ```
 
-### **2.1.2 addWorker方法**
+### **3.1.2 addWorker方法**
 
 使用该方法来新增工作线程，方法入口提供了isFirstTask参数和core参数，可决定新增的线程是否有第一个执行的command 和 是否新增后加入到core中
 
@@ -374,7 +427,7 @@ final void tryTerminated() {
 }
 ```
 
-### **2.1.3 shutDown和shutDownNow**
+### **3.1.3 shutDown和shutDownNow**
 
 ```java
 public void shutdown() {
@@ -417,5 +470,9 @@ public void shutdownNow() {
 ```
 
 # 参考
+- [线程池的五种状态](https://www.cnblogs.com/jxxblogs/p/11751944.html)
 - [Java 线程池 ThreadPoolExecutor 中的位运算操作](https://blog.csdn.net/cnm10050/article/details/105835302)
 - [线程池看懂了也很简单](https://blog.csdn.net/bieber007/article/details/108487746)
+- [Java线程池ThreadPoolExecutor使用和分析(三) - 终止线程池原理](https://www.cnblogs.com/trust-freedom/p/6693601.html)
+- [深入理解Java线程池：ThreadPoolExecutor](https://www.cnblogs.com/liuzhihu/p/8177371.html)
+- [ThreadPoolExecutor 优雅关闭线程池的原理.md](https://www.cnblogs.com/xiaoheike/p/11185453.html)
