@@ -238,6 +238,113 @@ public ThreadPoolExecutor(int corePoolSize, int maxiumPoolSize, long keepAliveTi
 
 ### **2.3 Worker**
 
+线程池中的每一个线程被封装为一个Worker对象，ThreadPool维护的其实就是一组Worker对象
+
+Worker直接继承了AQS，重写模板方法来实现**独占功能**
+
+**实现独占特性去反应线程现在的执行状态，有锁标识worker空闲态与忙碌态，从而方便控制worker的销毁操作**
+1. lock方法一旦获取独占锁，则表示当前线程正在执行任务
+2. 如果正在执行任务，则不应该中断线程（除了shutdownNow()）
+3. 如果该线程现在不是独占锁状态，即idle状态，说明正在等待任务，此时可以中断线程（shutdown()）
+4. 线程池在使用shutdown()方法或tryTerminate()时，会调用interruptIdleWorkers方法来中断空闲的线程，里面又会使用tryLock方法来判断线程是否处于空闲状态，是空闲状态的话可以安全回收
+
+没有使用Reentrantlock来实现独占锁的功能，原因在于Worker**是不可重入的**，而ReentrantLock是可重入的
+
+**实现不可重入特性，防止在任务内运行修改线程池行为的接口**
+
+之所以设计为不可重入，是如果使用ReentrantLock，它因为可重入，如果在任务中调用了入setCorePoolSize这类线程池的控制方法，会中断正在运行的线程
+
+```java
+private void setCorePoolSize() {
+    // ...
+    if (workerCountOf(ctl.get()) > corePoolSize)
+        interruptIdleWorkers();
+}
+
+public void interruptIdleWorkers(boolean onlyOne) {
+    // ...
+    try {
+        for (Worker w : workers) {
+            Thread t = w.thread;
+            // w.tryLock()如果是可重入的，且当前线程就是独占w的线程，则会对正在进行的任务进行中断
+            if (!t.isInterrupted() && w.tryLock()) {
+            }
+            // ...
+        }
+    } finally {
+        // ...
+    }
+}
+
+// 在interruptIdleWorkers，会导致当前尝试中断线程就是独占w的线程的情况
+public static void main(String[] args) {
+    ThreadPoolExecutor exec = Executors.newSingleThreadPool();
+    // 在提交的任务里面修改线程池的属性
+    exec.submit(() -> {
+        exec.setCorePoolSize(10);
+    });
+}
+```
+
+```java
+private final class Worker extends AbstractQueuedSynchronizer implements Runnable {
+    // worker对应的线程，工厂出错时候为null
+    final Thread thread;
+
+    // 初始化时执行的第一个任务，可能为null
+    Runnable firstTask;
+
+    // 线程任务计数器
+    volatile long completedTasks;
+
+    Worker(Runnable firstTask) {
+        setState(-1); // -1代表worker还未启动，与独占锁不同
+        this.firstTask = firstTask;
+        this.thread = getThreadFactory().newThread(this);
+    }
+
+    public void run() {
+        // runWorker方法会在一开始unlock一次，该操作相当于启动Worker
+        runWorker(this);
+    }
+
+    protected boolean isHeldExclusively() {
+        return getState() != 0;
+    }
+
+    protected boolean tryAcquire(int unused) {
+        if (compareAndSetState(0, 1)) {
+            setExclusiveOwnerThread(Thread.currentThread());
+            return true;
+        }
+        // 在此处没有判断Thread.currentThread()是否是占用的线程，也表明了Worker是不可重入的
+        return false;
+    }
+
+    protected boolean tryRelease(int unused) {
+        setExclusiveOwnerThread(null);
+        setState(0);
+        return true;
+    }
+
+    public void lock() {acquire(1);}
+    public boolean tryLock() {return tryAcquire(1);}
+    public void unlock() {release(1);}
+    public boolean isLocked() {return isHeldExclusively();}
+
+    // shutdownNow() -> interruptWorkers() -> interruptIfStarted()
+    void interruptIfStarted() {
+        Thread t;
+        // 无论是否正在执行任务，都将被中断
+        if (getState() >= 0 && (t == thread) != null && !t.isInterrupted()) {
+            try {
+                t.interrput();
+            } catch(SecurityException ignore)
+        }
+    }
+}
+```
+
 ## **3. 关键行为**
 
 ### **3.1 线程池管理**
@@ -476,3 +583,4 @@ public void shutdownNow() {
 - [Java线程池ThreadPoolExecutor使用和分析(三) - 终止线程池原理](https://www.cnblogs.com/trust-freedom/p/6693601.html)
 - [深入理解Java线程池：ThreadPoolExecutor](https://www.cnblogs.com/liuzhihu/p/8177371.html)
 - [ThreadPoolExecutor 优雅关闭线程池的原理.md](https://www.cnblogs.com/xiaoheike/p/11185453.html)
+- [](https://www.cnblogs.com/trust-freedom/p/6681948.html)
