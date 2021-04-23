@@ -350,18 +350,13 @@ private final class Worker extends AbstractQueuedSynchronizer implements Runnabl
 
 ## **3. 关键行为**
 
-### **3.1 线程池管理**
-
-#### **3.1.1 提交/新增工作线程/执行**
-
-![线程池执行流程](https://images2015.cnblogs.com/blog/677054/201704/677054-20170408210803050-1576156526.png)
-
-线程池的执行做到了以下：
+线程池做到了以下：
 1. 控制workset, workqueue的数量(execute)
 2. 启动线程，消费queue(addWorker)
 3. Worker线程在启动后会调用自身run方法 -> 执行线程池.runWorker方法 -> 从任务队列取出任务执行
+4. 
 
-#### **3.1.1.1 excute(Runnable command) （提交）**
+### **3.1 excute(Runnable command) （提交）**
 
 重写了最上层接口Executor.excute方法，道格李在注释中写出了执行的三个步骤：
 
@@ -404,7 +399,7 @@ public void execute(Runnable command) {
 }
 ```
 
-#### **3.1.1.2 addWorker(Runnable command, boolean core) （新增工作线程）**
+### **3.2 addWorker(Runnable command, boolean core) （新增工作线程）**
 
 方法入口提供了isFirstTask参数和core参数，可决定新增的线程是否有第一个执行的command 和 是否新增后加入到core中
 
@@ -527,13 +522,72 @@ public void addWorkerFailed(Worker w) {
 
 如果创建了线程，但是线程并没有成功开启，则需要将该线程从池中进行移除
 
-#### **3.1.1.3 消费任务/Worker轮询 （执行）**
+### **3.3 Worker轮询/消费任务 （执行）**
+
+在2.3中，Worker的run方法实现，会调用线程池runWorkers(Worker w)方法，以启动线程池中的线程
+
+### **3.3.1 runWorker(Worker w)**
+
+```java
+final void runWorker(Worker w) {
+    Thread wt = Thread.currentThread();
+    Runnable task = w .firstTask;
+    w.firstTask = null;
+    w.unlock(); // 初始化后为-1，在这里变为0，即空闲状态
+    boolean completedAbruptly = true; // 出错标记
+    try {
+        // 取任务，会在getTask()方法中阻塞住
+        while (task != null || (task = getTask() != null)) {
+            // 线程加锁，处于执行任务状态
+            w.lock();
+
+            // runAtLeast(ctl.get(), STOP): STOP，TIDYING，TERMINATED
+            // Thread.interrupted() && runAtLeast(ctl.get(), STOP): 上一个判断认为线程池未STOP，此时获取并清除中断标记，如果发现被中断了，很大可能是并发调用了shutdownNow，，再次双重检测当前线程池状态
+            // !wt.isInterrupted：这个条件用来组合前面的判断，即处于STOP时，线程没被中断，则应该中断
+
+            // 这里为了确保两件事：当线程池处于STOP（shutdownNow）时，线程应该被中断；当线程池处于RUNNING或SHUTDOWN时，线程不应该中断（只中断空闲的线程）
+            // 1. runAtLeast(ctl.get(), STOP) && !wt.isInterrupted()：第一次检测就是STOP了，则确保线程被中断
+            // 2. !runAtLeast(ctl.get(), STOP) || !Thread.interrupted()：处于RUNNING状态，且线程没有被中断
+            // 3. !runAtLeast(ctl.get(), STOP) || (Thread.interrupted() && runAtLeast(ctl.get(), STOP)) && !wt.isInterrupted()：在Thread.interrupted发现被中断，可能并发调用了shutdownNow，再次检测，并且确保线程中断
+            if ((runAtLeast(ctl.get(), STOP) || (Thread.interrupted() && runAtLeast(ctl.get(), STOP)) && !wt.isInterrupted())
+                wt.interrupt();
+            try {
+                beforeExecute(wt, task);
+                Throwable thrown = null;
+                try {
+                    // 真正的执行任务
+                    task.run();
+                } catch (RuntimeException x) {
+                    thrown = x; throw x;
+                } catch (Error x) {
+                    thrown = x; throw x;
+                } catch (Throwable x) {
+                    thrown = x; throw new Error(x);
+                } finally {
+                    afterExecute(task, thrown);
+                }
+            } finally {
+                task = null;
+                w.completedTask++;
+                // 线程解锁，处于空闲状态
+                w.unlock();
+            }
+            completedAbruptly = false;
+        }
+    } finally {
+        // 线程退出，条件为getTask()返回null
+        processWorkExit(w, completedAbruptly);
+    }
+}
+```
+
+### **3.3.2 getTask()**
 
 ![getTask](https://images2015.cnblogs.com/blog/677054/201704/677054-20170408211632300-254189763.png)
 
 ```java
 private Runnable getTask() {
-    // 记录上次取任务是否超时
+    // 记录上次获取任务是否超时
     boolean timedOut= false;
 
     for (;;) {
@@ -553,37 +607,95 @@ private Runnable getTask() {
         // 对于超过核心线程数量的线程，需要进行超时控制
         boolean timed = allowCoreThreadTimeOut || wc > corePoolSize;
 
-        // 
+        // wc > maxiumPoolSize: 调用了setMaxiumPoolSize方法，需要调整线程的数量
+        // timed && timeOut: 为真表示上次操作已经超时（超时，即总是取不到，可以认为消费速度大于生产速度）且当前wc大于corePoolSize
+        // wc > 1: 大于1则表示线程池的有效线程不止有当前的线程
+        // workQueue.isEmpty(): 消费速度快
         if ((wc > maxiumPoolSize || (timed && timeOut)) && (wc > 1 || workQueue.isEmpty())) {
             if (compareAndDecrementWorkerCount(c))
                 return null;
             continue;
         }
-    }
-}
-```
 
-在2.3中，Worker的run方法实现，会调用线程池runWorkers(Worker w)方法，以启动线程池中的线程
+        try {
+            Runnable r = timed ? workQueue.poll(keepAliveTime, TimeUnit.NANOSECONDS) : workQueue.take();
 
-```java
-final void runWorker(Worker w) {
-    Thread wt = Thread.currentThread();
-    Runnable task = w .firstTask;
-    w.firstTask = null;
-    w.unlock(); // 初始化后为-1，在这里变为0，即空闲状态
-    boolean completedAbruptly = true;
-    try {
-        // 取任务，会在getTask()方法中阻塞住
-        while (task != null || (task = getTask() != null)) {
-            w.lock();
-
-
+            if (r != null) {
+                return r;
+            }
+            // r 只有可能在poll中返回null，也意味着超时了
+            timeout = true;
+        } catch (InterruptedException retry) {
+            // workQueue使用显式锁，并调用了ConditionObject.wait可中断阻塞方法，在被其他线程或本线程中断时，会抛出InterruptedException
+            timeout = false;
         }
     }
 }
 ```
 
-### **3.1.3 shutDown和shutDownNow**
+getTask()是线程池控制核心线程数量的重要代码，关键点在于第二个if。通过是否对阻塞队列的poll的超时情况，来反映出当前环境下生产与消费的情况。当wc大于corePoolSize时，结合上次操作的超时情况与当前任务队列是否为空，可以看出消费者的是否有足够的消费速率。
+
+### **3.4 关闭**
+
+关闭方法分为两种有两种：
+- 优雅关闭：shutdown() RUNNING -> SHUTDOWN
+- 暴力关闭：shutdownNow() RUNNING/SHUTDOWN -> STOP
+
+两种关闭方式的区别，在于遍历workerSet时，对是否应该中断的判断不同。对应的，SHUTDOWN下正在执行任务的线程不应该被中断；STOP下的线程都应该确保被中断
+
+关闭作为线程池管理的一个重要行为，会与执行/提交/设置等行为互斥
+
+### **3.4.1 processWorkerExit(Worker w, boolean completedAbruptly)**
+
+该方法用于记录完成任务数，并将自身从线程集合中移除
+
+该方法具有传递性，具体由一个线程的中断并退出，调用tryTerminate方法进行传递，而tryTerminated()方法只会中断一个线程
+
+```java
+private void processWorkerExit(Worker w, boolean completedAbruptly) {
+    // completedAbruptly为true，表示线程在执行任务中出错导致线程完成生命周期
+    if (completedAbruptly)
+        decrementWorkerCount();
+
+    final ReentrantLock mainLock = this.lock;
+    mainLock.lock();
+    try {
+        completedCount += w.completedCount;
+        workers.remove(w);
+    } finally {
+        mainLock.unlock();
+    }
+
+    // 如果线程池正在关闭，此处调用会传递中断的信号到下一个空闲的线程，使其退出，在退出时调用该方法
+    tryTerminate();
+
+    int c = ctl.get();
+    if (runStateLess(c, STOP)) {
+        if (!completedAbruptly) {
+            int min = allowCorePoolTimeout ? 0 : corePoolSize;
+            if (min == 0 && !workQueue.isEmpty())
+                min = 1;
+            if (workCountOf(c) > min)
+                return;
+        }
+        addWorker(null, false);
+    }
+}
+```
+
+### **3.4.2 优雅关闭**
+
+pool.shutdown() 
+-> 优雅关闭的入口
+interruptIdleWorkers(false)
+-> 中断所有的空闲线程
+runWorker
+-> 退出runWorker，执行finally的方法
+processWorkerExit()
+->
+tryTerminate()
+-> 如果工作线程已经为0，则直接终止线程池
+-> 如果线程数不为0，则打断一个线程，使其退出的时候再调用tryTerminated()进行传递
 
 线程不允许被中断的情况有：
 1. 刚创建，但还未执行runWorker方法
@@ -644,7 +756,25 @@ public void shutdown() {
     }
     tryTerminate();
 }
+```
 
+### **3.4.3 直接关闭**
+
+pool.shutdownNow()
+->
+interruptWorkers()
+-> 中断所有的Worker线程
+worker.interruptIfStarted()
+-> 设置中断
+runWorkers()
+-> 阻塞过程被中断，直接退出方法
+processWorkerExit()
+->
+tryTerminate()
+-> 如果工作线程已经为0，则直接终止线程池
+-> 如果线程数不为0，则打断一个线程，使其退出的时候再调用tryTerminated()进行传递
+
+```java
 public void shutdownNow() {
     List<Runnable> tasks;
     final ReentrantLock mainLock = this.mainLock;
@@ -669,7 +799,6 @@ public void shutdownNow() {
 # 参考
 - [线程池的五种状态](https://www.cnblogs.com/jxxblogs/p/11751944.html)
 - [Java 线程池 ThreadPoolExecutor 中的位运算操作](https://blog.csdn.net/cnm10050/article/details/105835302)
-- [线程池看懂了也很简单](https://blog.csdn.net/bieber007/article/details/108487746)
 - [Java线程池ThreadPoolExecutor使用和分析(三) - 终止线程池原理](https://www.cnblogs.com/trust-freedom/p/6693601.html)
 - [深入理解Java线程池：ThreadPoolExecutor](https://www.cnblogs.com/liuzhihu/p/8177371.html)
 - [ThreadPoolExecutor 优雅关闭线程池的原理.md](https://www.cnblogs.com/xiaoheike/p/11185453.html)
