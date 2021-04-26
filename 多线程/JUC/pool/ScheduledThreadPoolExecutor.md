@@ -113,9 +113,9 @@ scheduleAtFixedRate和scheduleWithFixedDelay具备了循环执行的能力，即
 
 1. 生产端
 
-线程池：用户每调一次execute/submit则产出一次任务
+线程池：用户每调一次execute/submit则产出一次任务，如果wc > corePoolSize，则投递到队列中
 
-调度池：用户提交一次任务后，任务按周期/按延迟，产出一次任务
+调度池：用户提交一次任务后，任务按周期/按延迟执行，执行完毕后设置下次执行任务时间，投递到队列中（一直循环）
 
 2. 消费端：
 
@@ -125,6 +125,117 @@ scheduleAtFixedRate和scheduleWithFixedDelay具备了循环执行的能力，即
 
 
 ## **3.1 基本设施**
+
+- 使用内部类ScheduleFutureTask对传入的任务进行装饰
+- 使用DelayedWorkQueue（无界的优先级队列）作为父类阻塞队列的实现
+
+```java
+public class SchduleThreadPoolExecutor extends ThreadPoolExecutor implements ScheduleExecutorService {
+    // 无界的优先级队列，BlockingQueue的具体实现
+    static class DelayedWorkQueue extends AbstractQueue<Runnable> implements BlockingQueue<Runnable> {}
+
+    // 内部类，用于装饰传入的任务，也是队列每一项的类型
+    private class ScheduledFutureTask<V> extends FutureTask<V> implements RunnableSchedukedFuture<V> {}
+
+    // 成员属性
+
+    // 当线程池处于SHUTDOWN状态时，是否继续执行存在队列中的周期性定时任务
+    private volatile boolean continueExistingPeriodTasksAfterShutdown;
+
+    // 当线程池处于SHUTDOWN状态时，是否继续执行存在队列中的延迟定时任务
+    private volatile boolean continueExistingDelayTaskAfterShutdown = true;
+
+    // 任务取消之后，是否从队列中删除
+    private volatile boolean removeOnCancel = false;
+
+    // 记录当前任务被创建时是第几个任务的一个序号，用于决定当有多个任务下次执行时间相同时，谁先执行。序号小的先执行
+    private static final AtomicLong sequencer = new AtomicLong();
+}
+```
+
+## **3.1.1 ScheduleFutureTask**
+
+```java
+private class ScheduledFutureTask<V> extends FutureTask<V> implements RunnableScheduleFuture<V> {
+    // 记录当前实例的序列号，用于确认两个下次执行时间相同的任务的执行次序，序号更小的任务先被执行
+    private final long sequenceNumber;
+
+    // 任务的下次执行时间
+    private long time;
+
+    // 用于记录任务的间隔
+    // = 0，代表一次性任务
+    // > 0，代表是周期性任务
+    // < 0，代表是延迟性任务
+    private final long period;
+
+    // 记录需要周期性执行的任务的实例
+    RunnableScheduledFuture<V> outerTask = this;
+
+    // 记录当前任务在队列数组位置的下标
+    int heapIndex;
+
+    ScheduledFutureTask(Runnable r, V result, long ns, long period) {
+        super(r, result);
+        // 第一次初始化时，ns为当前时间 + initialDelay
+        this.time = ns;
+        // FixedRate任务 > 0; FixedDelay任务 < 0
+        this.period = period;
+        this.sequenceNumber = sequence.getAndIncrement();
+    }
+
+    // 获得当前距离下次执行时间的值，单位为纳秒
+    public long getDelay(TimeUnit unit) {
+        return unit.convert(time - now(), NANOSECONDS);
+    }
+
+    public int compareTo(Delayed other) {
+        // 下次执行时间越早的，优先级越大
+        // 相同下次执行时间的，序号越小的，优先级越大
+    }
+
+    // RunnableFuture的接口方法，判断任务是否是循环任务
+    // 该方法用于每次执行任务完毕后，检查是否为周期性任务，是的话，则调用setNextRunTime设置下次运行时间
+    public boolean isPeriodic() {
+        return period != 0;
+    }
+
+    private void setNextRunTime() {
+        long p = period;
+        if (p > 0)
+            // 固定周期型任务，FixedRate
+            time += p;
+        else
+            // 延迟周期性任务，FixedDelay
+            time = triggerTime(-p);
+    }
+
+    public boolean cancel(boolean mayInterruptIfRunning) {
+        boolean cancelled = super.cancel(mayInterruptIfRunning);
+        // 如果removeOnCancel为true，则取消任务后，会将任务从队列中移除
+        if (cancelled && removeOnCancel && heapIndex >= 0)
+            remove(this);
+        return cancelled;
+    }
+
+    public void run() {
+        // 任务执行时，会先判断是否是周期性任务，再采取不同的执行策略
+        boolean periodic = isPeriodic();
+        if (!canRunInCurrentRunState(periodic))
+            cancel(false);
+        else if (!periodic)
+            // 一次性任务，则调用FutureTask.run()方法
+            SchduledFutureTask.super.run();
+        else if (ScheduledFutureTask.super.runAndReset()) {
+            // 周期性任务，在运行并重置后，设置任务的下次执行时间
+            setNextRunTime();
+            // 将当前任务放入任务队列中以便下次执行
+            // 该方法就是生产投递
+            reExecutePeriodic(outerTask);
+        }
+    }
+}
+```
 
 
 ## **3.2 关键行为**

@@ -4,7 +4,7 @@
 
 > 上一篇文章：[ThreadPoolExecutor（二）：生产消费](http://8.135.101.145/archives/threadpoolexecutor1)
 
-本篇文章的知识点涵盖了：线程池属性统计/线程池关闭，在开始以上知识点前，我们先引入线程池对于这些操作的独占属性
+本篇文章的知识点涵盖了：线程池属性统计、线程池关闭和队列满时的拒绝策略，在开始以上知识点前，我们先引入线程池对于这些操作的独占属性
 
 # **1. mainlock（独占操作）**
 
@@ -284,6 +284,19 @@ public void shutdownNow() {
     return tasks;
 }
 ```
+
+# **3. 拒绝策略**
+
+当队列已满，且当前工作线程数大于maximumPoolSize时，线程拒绝添加新任务，一共有以下4种拒绝策略
+
+| 策略 | 描述 |
+| -----| ----- |
+| AbortPolicy | 丢弃任务，会向上层抛出RejectExecutionException异常 |
+| CallerRunsPolicy | 调用者线程自行运行任务 |
+| DiscardOldestPolicy | 替换最旧的任务，即队头出队，新任务从队尾投入 |
+| DiscardPolicy | 空操作，丢弃任务，不会抛出异常 |
+
+**defaultHandler缺省抛弃策是ThreadPoolExecutor.AbortPolicy()**
 
 # 参考
 - [ThreadPoolExecutor 优雅关闭线程池的原理.md](https://www.cnblogs.com/xiaoheike/p/11185453.html)
