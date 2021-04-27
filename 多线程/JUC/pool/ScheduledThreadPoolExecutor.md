@@ -1,4 +1,4 @@
-# ScheduledThreadPoolExecutor
+# ScheduledThreadPoolExecutor调度线程池
 
 上篇文章描述了ThreadPoolExecutor的池管理
 
@@ -134,10 +134,10 @@ public class SchduleThreadPoolExecutor extends ThreadPoolExecutor implements Sch
     // 无界的优先级队列，BlockingQueue的具体实现
     static class DelayedWorkQueue extends AbstractQueue<Runnable> implements BlockingQueue<Runnable> {}
 
-    // 内部类，用于装饰传入的任务，也是队列每一项的类型
+    // 内部类，用于装饰传入的任务，队列每一项都是一个ScheduledFutureTask
     private class ScheduledFutureTask<V> extends FutureTask<V> implements RunnableSchedukedFuture<V> {}
 
-    // 成员属性
+    // 成员属性：
 
     // 当线程池处于SHUTDOWN状态时，是否继续执行存在队列中的周期性定时任务
     private volatile boolean continueExistingPeriodTasksAfterShutdown;
@@ -189,9 +189,19 @@ private class ScheduledFutureTask<V> extends FutureTask<V> implements RunnableSc
         return unit.convert(time - now(), NANOSECONDS);
     }
 
+    // 优先级越高，在队列越靠前，队列是优先级降序的，即最大堆
     public int compareTo(Delayed other) {
         // 下次执行时间越早的，优先级越大
         // 相同下次执行时间的，序号越小的，优先级越大
+        long diff = time - x.time;
+        if (diff < 0) // 当前任务，比other更早执行
+            return -1;
+        else if (diff > 0) // 当前任务，比other晚执行
+            return 1;
+        else if (sequenceNumber < x.sequenceNumber) // 当前任务比ohter更早创建，则更早执行
+            return -1;
+        else
+            return 1;
     }
 
     // RunnableFuture的接口方法，判断任务是否是循环任务
@@ -237,10 +247,82 @@ private class ScheduledFutureTask<V> extends FutureTask<V> implements RunnableSc
 }
 ```
 
+主要的方法：isPeriodic()、setNextRunTime()和reExecutePeriodic()
+
+驱动入口是FutureTask.run()方法，根据RunnableScheduleFuture.isPeriodic()方法，判断是否周期性
+
+当遇到周期型任务时，会再选择调用FutureTask.runAndReset()方法，该方法设计用于本质上执行多次的任务，在执行计算后不会设置Future的result，并将Future重置为初始状态
+
+周期性任务run完，则根据FixedRate或FixedDelay类型，设置下次执行时间，并重新加入到队列中（**自产自销**）
+
+## **3.1.2 DelayedWorkQueue**
+
+> [DelayedWorkQueue优先级阻塞队列]()
 
 ## **3.2 关键行为**
 
+### **3.2.1 delayedExecute**
+
+delayedExecute是schedule/scheduleAtFixedRate/scheduleWithFixedDelay这三种方法的关键实现，其主要目的有以下两个：
+- 将任务加入到队列中（任务在外层已经被包装并初始化）
+- 检测核心线程数量，不够则启动线程
+
+```java
+private void delayedExecute(RunnableScheduledFuture<?> task) {
+    if (isShutdown())
+        reject(task);
+    else {
+        super.getQueue().add(task);
+
+        // 再次校验线程池的状态
+        if (!isShutdown() && !canRunInCurrentRunState(task.isPeriodic() && remove(task)))
+            task.cancel(false);
+        else
+            // 关键：启动线程
+            ensurePrestart();
+    }
+}
+```
+### **3.2.2 ensurePrestart**
+
+```java
+void ensurePrestart() {
+    int wc = workerCountOf(ctl.get());
+    if (wc < corePoolSize)
+        // 通过ThreadPoolExecutor.addWorker，保证工作线程不会超过核心数
+        addWorker(null, true);
+    else if (wc == 0)
+        addWorker(null, false);
+}
+```
+
+### **3.2.3 reExecutePeriodic**
+
+```java
+// task在执行完毕后，会调用该方法，产出新的任务，并确保消费线程数
+void reExecutePeriodic(RunnableScheduledFuture<?> task) {
+    if (canRunInCurrentRunState(true)) {
+        super.getQueue().add(task);
+        if (!canRunInCurrentRunState(true) && remove(task))
+            task.cancel(false);
+        else
+            ensurePrestart();
+    }
+}
+```
+
+## **3.2.4 行为总结**
+
+生产端的特点：自产自销，生产速率固定，由任务执行间隔参数决定
+
+- 外部调用schedule/scheduleAtFixedRate/scheduleWithFixedDelay方法，初始化任务，并通过delayedExecute方法投递到队列中
+- 任务在被执行后会被重置，并重新设置下次执行时间，并通过reExecutePeriodic方法再次投递到队列中
+
+消费端的特点：线程数会慢慢固定在corePoolSize，消费速率固定，任务执行间隔参数决定
+- 调用schedule/scheduleAtFixedRate/scheduleWithFixedDelay时，会调用ensurePrestart方法增加线程
+- 在执行完任务，通过reExecutePeriodic方法检测并维持核心线程数
+
 # 参考
 - [ScheduledThreadPoolExecutor详解](https://blog.csdn.net/qq_40685275/article/details/99836268)
-
-# 重点参考
+- [ScheduledThreadPoolExecutor详解](https://zhuanlan.zhihu.com/p/86961679)
+- [详细理解优先队列DelayedWorkQueue](https://blog.csdn.net/nobody_1/article/details/99684009)
