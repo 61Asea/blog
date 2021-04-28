@@ -165,21 +165,36 @@ private void siftUp(int k, RunnableScheduledFuture<?> key) {
 1. 第一轮循环
 
     查找新增位置k的父节点：int parent = (3 - 1) >>> 1 = 1;
+    
     取出父节点的任务：e = queue[parent] = queue[1] = task2;
+    
+    判断父节点任务和task4的优先级，task4优先级更高
+    
     将父节点挪到新增位置k：queue[k] = queue[3] = task2;
-    队列当前情况：[task1, task2, task3, task2]
+    
     重新设置：k = parent = 1;
+    
+    队列当前情况：[task1, task2, task3, task2]
 
 2. 第二轮循环
+    
     查找新的k的父节点：int parent = (1 - 1) >>> 1 = 0;
+    
     发现是根节点：e = queue[parent] = queue[0] = task1;
+   
+    判断根节点任务和task4的优先级，task4优先级更高
+    
     将根节点挪到k的位置：queue[k] = queue[1] = task1;
-    队列当前情况：[task1, task1, task3, task2]
+    
     重新设置：k = parent = 0;
+    
+    队列当前情况：[task1, task1, task3, task2]
 
 3. task4入队
     发现k = 0，退出循环
+    
     设置task4：queue[k] = queue[0] = task4
+    
     队列最终情况：[task4, task1, task3, task2]
 
 ## **1.2 堆移除**
@@ -215,10 +230,13 @@ private void siftDown(int k, RunnableScheduledFuture<?> key) {
 1. 在执行siftDown前的准备工作(remove方法)
 
     设置要删除的节点的位置缓存: setIndex(queue[0], -1);
+    
     队列长度先减一：size = size - 1 -> 4 - 1 = 3; 
+    
     取出最后一个节点，缓存起来，并将其在队列置为空：
         replacement = queue[0]
         queue[0] = null -> queue[0] = null;
+    
     如果队列删除的不是尾节点：调用siftDown(replacement) -> 执行siftDown(0, replacement(task2))
 
     队列详情为：[task4, task1, task3]
@@ -226,11 +244,16 @@ private void siftDown(int k, RunnableScheduledFuture<?> key) {
 2. 第一轮循环
 
     获得叶子节点层的索引：int half = size >>> 1 -> 3 >>> 1 = 1;
+    
     往下挪的位置，是否在叶子节点之上：while (k < half) -> while (0 < 1);
+    
     获得节点的左和右子节点索引：int child = (k << 1) + 1 -> (0 << 1) + 1 = 1，int right = child + 1 = 2;
-    比较左跟右的优先级，取更大的那个，这里假设task3更大：c = queue[child = right] -> c = task3, child = 2;
-    比较更大的子节点与要替换的节点的大小，更大的那个占住k的位置：
+    
+    比较左(task1)跟右(task3)的优先级，取更大的那个，这里假设task3更大：c = queue[child = right] -> c = task3, child = 2;
+    
+    比较更大的子节点(task3)与替换节点(task2)的大小，更大的那个占住k的位置：
     queue[k] = queue[0] = c;
+
     设置k的值为更大子节点的索引: k = child = 2;
 
     队列详情为：[task3, task1, task3]
@@ -238,6 +261,7 @@ private void siftDown(int k, RunnableScheduledFuture<?> key) {
 3. 结束，退出循环
 
     发现 while(k < half) -> while(2 < 1)，退出
+    
     设置k(child)位置为task2：queue[2] = task2;
 
     队列详情为：[task3, task1, task2]
