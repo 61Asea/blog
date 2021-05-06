@@ -499,3 +499,4 @@ public boolean isDone() {
 # 重点参考
 - [深入理解 异步任务执行类FutureTask源码分析](https://blog.csdn.net/wl12346/article/details/103818451)
 - [理解与使用Treiber Stack](https://www.cnblogs.com/mrcharleshu/p/13227895.html)
+- [java 中断线程的几种方式 interrupt()](https://www.cnblogs.com/myseries/p/10918819.html)
