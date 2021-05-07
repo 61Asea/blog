@@ -24,7 +24,7 @@ public class ArrayList<E> extends AbstractList<E> implements List<E>, RandomAcce
         if (initialCapacity > 0) {
             this.elementData = new Object[initialCapacity];
         } else if (initialCapacity == 0) {
-            // 初始容量传入0，在添加元素时，不会进行默认扩容？
+            // 初始容量传入0，在添加元素时，不会进行默认扩容，而是根据第一次添加的元素长度进行扩容
             this.elementData = EMPTY_ELEMENTDATA;
         } else {
             throw new IllegalArgumentException();
@@ -143,6 +143,109 @@ private static int hugeCapacity(int minCapacity) {
 }
 ```
 
+add/addAll方法会根据加入元素的个数与当前size的总和作为**最小容量**，扩容后的底层数组长度应尽量超过它，否则会造成多次扩容
+
+正常扩容后的长度为之前的1.5倍
+
+    newCapacity = oldCapacity(elementData.length) + oldCapacity >>> 1;
+
+当使用addAll一次性添加过多元素，超过了之前的1.5倍，下次操作必定触发扩容
+
+扩容不可避免地涉及到了内存复制，需要调用**Array.of()把原数组复制到新数组中**，这个操作代价很高，因此应**尽可能地减少扩容的次数**
+
+    如阿里开发规范手册，常见的做法有，在可控可知的元素个数的情况下，创建ArrayList对象时就尽可能指定较大的容量大小，以此来减少扩容的次数
+
+# **3. 删除**
+
+可根据索引下标删除元素的方法remove(index)，以及根据对象是否相等进行删除的方法remove(Object)
+
+```java
+public E remove(int index) {
+    rangeCheck(index);
+
+    modCount++;
+    // 根据索引下标获得响应元素
+    E oldValue = elementData(index);
+
+    int numMoved = size - index - 1;
+    if (numMoved > 0)
+        // 将index后的所有元素都往前挪
+        System.arrayCopy(elementData, index + 1, elementData, index, numMoved)
+    return oldValue;
+}
+```
+
+需要调用System.arrayCopy将index后面的所有元素都往前挪一位，即复制到index的位置上，该操作的时间复杂度为O(N)，开销较大
+
+```java
+public boolean remove(Object o) {
+    if (o == null) {
+        for (int index = 0; index < size; index++) {
+            if (elementData[index] == null) {
+                fastRemove(index);
+                return true;
+            }
+        }
+    } else {
+        for (int index = 0; index < size; index++) {
+            if (o.equals(elementData[index])) {
+                fastRemove(index);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+```
+
+remove(Object)方法将从头开始查找与指定对象相等的元素，并将其删除，时间复杂度为O(n^2)
+
+# **4. 序列化**
+
+elementData属于transient类型，在序列化的时候会被忽略，因为它是一个可变长度的数组，可能有其他数组项还未被填充
+
+所以ArrayList实现了writeObject和readObject方法，来**控制只序列化被填充部分的内容**
+
+```java
+private void writeObject(java.io.ObjectOutputStream s)
+throws java.io.IOException{
+    int expectedModCount = modCount;
+    s.defaultWriteObject();
+
+    s.writeInt(size);
+
+    // 这个地方使用了size，只序列化已填充的项
+    for (int i=0; i<size; i++) {
+        s.writeObject(elementData[i]);
+    }
+
+    if (modCount != expectedModCount) {
+        throw new ConcurrentModificationException();
+    }
+}
+```
+
+# **5. 集合框架的快速失败，fail-fast机制（modCount）**
+
+    集合框架的快速失败机制，是一种保证集合在多线程下不能被并发修改的机制
+
+modCount用于记录ArrayList结构发生变化的次数，结构变化指的是添加/删除一个元素，导致底层的内部数组的调整
+
+在进行序列化或者迭代操作时，**会对modCount进行对比**，如果发现有变化，则抛出ConcurrentModificationException异常，来保证迭代的安全
+
+在多线程并发访问容器时，该机制可以有效地提前结束，避免可能发生的错误会造成程序往下执行异常
+
+    在大部分情况下，ConcurrentModificationException的出现不是因为并发，而是在单线程下，使用增强for循环遍历集合，但是又在遍历过程中调整了内部数组
+    
+    Iterator使用了保护机制，只要它发现有某一次修改不是经过它自己进行的，那么就会抛出异常
+
+解决单线程遍历集合过程中修改内部数组可能导致ConcurrentModificationException的方法，有以下几种：
+- 使用普通for循环
+- 使用iterator迭代器进行遍历
+- 使用Stream的filter（未试过）
 
 # 参考
+- [cyc2018-Java容器](https://www.cyc2018.xyz/Java/Java%20%E5%AE%B9%E5%99%A8.html#arraylist)
 - [Arrays.asList()的集合不能add()和remove()](https://blog.csdn.net/javaboyweng/article/details/114631958)
+- [fail-fast](https://www.cnblogs.com/54chensongxia/p/12470446.html)
+- [fail-fast是什么鬼](https://blog.csdn.net/yjn1995/article/details/99471191)
