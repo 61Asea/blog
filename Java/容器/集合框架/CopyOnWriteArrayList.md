@@ -58,7 +58,7 @@ web业务场景中，**读多写少**是较为常见的，使用**读读互斥�
 
     **写多读少**的应用场景效率极差
 
-# **2. 基础设施**
+# **2. 源码分析**
 
 继承自List接口，而不是AbstractList接口
 
@@ -101,6 +101,8 @@ public class CopyOnWriteArrayList<E> implements List<E>, RandomAccess, Cloneable
 }
 ```
 
+## **2.1 关键成员**
+
 1. array
 
     存储的结构与ArrayList一致，但是多了volatile关键字，这是因为它在可能会导致数组结构修改的操作（添加/删除/设置）时，都会新建一个新的数组，并将更新后的数据**拷贝**到新的数组中
@@ -109,9 +111,9 @@ public class CopyOnWriteArrayList<E> implements List<E>, RandomAccess, Cloneable
 
     CopyOnWriteArrayList的线程安全操作是通过**lock互斥锁**实现的，当一个线程对数组进行操作时，都会独占锁资源，防止多个线程并发修改
 
-## **2.1 关键操作**
+## **2.2 关键操作**
 
-## **2.1.1 add**
+## **2.2.1 add**
 
 防止其他写线程并发修改导致线程安全问题，并在写时复制一份新数组，对新数组进行操作，操作完毕后用新数组覆盖元数据
 
@@ -158,7 +160,9 @@ public void add(int index, E element) {
 
 与ArrayList的add(int index, E element)方法不同，这里还得内存复制两次，因为操作的并不是原有的数组，新数组没有index之前的数据，真的效率巨差
 
-## **2.1.2 remove**
+## **2.2.2 remove**
+
+remove操作也是一样需要独占，与ArrayList有一点不同的是：因为操作的是新数组，而不是像ArrayList将index之后的元素往前挪，所以不存在最尾部元素没有置空的问题
 
 ```java
 public E remove(int index) {
@@ -184,6 +188,17 @@ public E remove(int index) {
     } finally {
         lock.unlock();
     }
+}
+```
+
+## **2.2.3 get**
+
+通过上面对修改/添加/删除操作的副本操作，get方法就相当于无束缚了，直接通过**内存屏障**，获得最终一致的数据即可
+
+```java
+public E get(int index) {
+    // 关键在于getArray()方法，会刷新工作内存，获取当前时刻最新的ArrayList
+    return get(getArray(), index);
 }
 ```
 
