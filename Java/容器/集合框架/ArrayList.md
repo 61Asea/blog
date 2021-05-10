@@ -171,9 +171,17 @@ public E remove(int index) {
     if (numMoved > 0)
         // 将index后的所有元素都往前挪
         System.arrayCopy(elementData, index + 1, elementData, index, numMoved)
+    // 将数组的最尾项置空，因为上面已经将最尾项往前挪了一位
+    
+    elementData[--size] = null;
     return oldValue;
 }
 ```
+
+[1, 2, 3, 4]
+=> remove(1)
+=> System.arrayCopy：[1, 3, 4，4]
+=> elementData[--size] = null：[1, 3, 4. null]
 
 需要调用System.arrayCopy将index后面的所有元素都往前挪一位，即复制到index的位置上，该操作的时间复杂度为O(N)，开销较大
 
