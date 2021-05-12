@@ -95,9 +95,51 @@ List，又称为列表，根据内存的分布情况，底层实现可以分为�
 
 4. Stack（基于数组实现的栈）
 
+5. CopyOnWriteArrayList（写时复制数组）
+
 ### **1.1.3 Queue**
 
+1. PriorityQueue
+
+2. PriorityBlockingQueue
+
+3. ScheduledThreadPool.DelayedWorkQueue
+
+4. ArrayBlockingQueue
+
+5. LinkedBlockingQueue
+
+6. SynchronousQueue
+
 ## **1.2 Map接口**
+
+Map，字面意思上为映射，也可称为字典，指的是存放**一组键值对**的结构，通过给定的键，可以根据**某些规则**找到键所对应的键值对，得到值
+
+Map与Hash息息相关，但是他们不是相等于的关系，Hash只是Map的一种实现方式，具体的实现有HashMap
+
+HashMap制定了给定键，通过**其hash值能快速定位到键对应的键值对**这个规则
+
+从AbstractMap中我们可以更确定这个思想，AbstractMap的get方法，会将整个键值对集合从头到尾进行遍历，当发现遍历到某个键值对的键与给定的键相等，则返回该键值对的值
+
+总结：Map规定的是键与值映射关系，并以键值对集合的方式进行存储，而**如何通过键从键值对集合中查找到合适的键值对，才是不同Map子类所需要关注的**
+
+## **1.2.1 HashMap**
+
+底层实现：数组 + 链表/红黑树
+
+通过Hash算法制定了查询规则，可以通过给定的键的Hash值，快速地定位到键值对处于数组的下标，获得相对于的桶。再对桶进行往下遍历，查找相等键的键值对，得到值
+
+通过该规则，在哈希冲突不严重的情况下，查找效率为O(1)
+
+## **1.2.2 TreeMap**
+
+底层实现：二叉树
+
+通过二叉树的结构制定查询规则，从二叉树root节点开始往下查找，查找相等键的键值对，得到值
+
+TreeMap带来更多的好处，是因为其插入节点时，会根据Comparator比较大小，在合适的位置进行插入。并且其提供了在相邻Key范围之内，向上/下取值的功能，这在某些功能开发上非常实用
+
+查找效率为O(logN)
 
 # 参考
 - [Java容器](https://www.cyc2018.xyz/Java/Java%20%E5%AE%B9%E5%99%A8.html)
