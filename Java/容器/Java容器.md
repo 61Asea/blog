@@ -115,13 +115,214 @@ List，又称为列表，根据内存的分布情况，底层实现可以分为�
 
 Map，字面意思上为映射，也可称为字典，指的是存放**一组键值对**的结构，通过给定的键，可以根据**某些规则**找到键所对应的键值对，得到值
 
+    所以从思想上来讲，数组就是一种Map，它的规则为：Entry<整型，值类型>，K与数组下标相等
+    
+Map接口上定义了映射的常见的put/get/remove/compute等行为，最重要的是定义了映射应有的四种结构：
+- 键值对Entry，类型为：Entry<K, V>
+- 键集合keySet，**键不可重复**，类型为：Set<K>
+- 值集合values，**值可重复**，类型为：Collection<V>
+- 键值对集合entrySet，类型为：Set<Entry<K, V>>
+
+```java
+public interface Map<K, V> {
+    // Map.Entry
+    interface Entry<K, V> {
+        K getKey();
+
+        V getValue();
+
+        V setValue();
+    }
+
+    Set<K> keySet();
+
+    Collection<V> values();
+
+    Set<Entry <K, V>> entrySet();
+}
+```
+
+总结：
+
+Map规定的是键与值映射关系，并以键值对集合的方式进行存储。如何**通过某种规则**，用指定键从键值对集合中查找到合适的键值对，才是Map子类实现上需要关注的
+
 Map与Hash息息相关，但是他们不是相等于的关系，Hash只是Map的一种实现方式，具体的实现有HashMap。从AbstractMap中我们可以更确定这个思想，AbstractMap的get方法，会将整个键值对集合从头到尾进行遍历，当发现遍历到某个键值对的键与给定的键相等，则返回该键值对的值
 
-HashMap则对应的制定了hash规则：给定键，通过**其hash值能快速定位到键对应的键值对**
+HashMap则对应的制定了映射规则：
+    
+    K的哈希值，与数组下标相等
 
-总结：Map规定的是键与值映射关系，并以键值对集合的方式进行存储。如何**通过某种规则**，用指定键从键值对集合中查找到合适的键值对，才是Map子类实现上需要关注的
+Map可以通过多种方式/结构来实现，其中一种方式就是哈希表。Hash也可以通过多种方式/结构实现
 
-## **1.2.1 HashMap**
+    其他的方式还有：树（TreeMap）、链表+链表/红黑树实现的哈希表（LinkedHashMap）、数组+链表/红黑树实现的哈希表（HashMap）、跳表（ConcurrentSkipListMap）等等
+
+## **1.2.1 AbstractMap**
+
+AbstractMap实现Map的大部分方法，为各种不同类型的映射实现提供了基本实现
+
+它定义了抽象映射的成员变量：键集合Set<K> keySet、值集合Collection<V> values，并通过AbstractSet和AbstractCollection匿名实现
+
+```java
+public abstract class AbstractMap<K, V> implements Map<K, V> {
+    protected AbstractMap() {}
+
+    transient Set<K> keySet;
+
+    transient Collection<V> values;
+
+    public Set<K> keySet() {
+        Set<K> ks = keySet;
+        if (ks == null) {
+            // AbstractMap定义了匿名类，需要调用具体的entrySet
+            ks = new AbstractSet<K>() {
+                public Iterator<K> iterator() {
+                    return new Iterator<K>() {
+                        // 具体的entrySet的迭代器，不同的Map子类都有自己的EntrySet类
+                        private Iterator<Entry<K, V>> i = entrySet().iterator();
+
+                        public boolean hasNext() {
+                            return i.hasNext();
+                        }
+
+                        public K next() {
+                            return i.next().getKey();
+                        }
+
+                        public void remove() {
+                            i.remove();
+                        }
+                    };
+                }
+
+                // 通过Map具体实现来返回
+                // 在AbstractMap为返回entrySet的长度
+                // HashMap/TreeMap都使用了size成员进行缓存
+                public int size() {
+                    return AbstractMap.this.size();
+                }
+
+                public boolean isEmpty() {
+                    return AbstractMap.this.isEmpty();
+                }
+
+                public void clear() {
+                    // 调用了entrySet().clear()方法
+                    // 在HashMap中，将clear方法放在了Map接口实现层
+                    AbstractMap.this.clear();
+                }
+
+                public boolean contains(Object k) {
+                    // 这里会通过迭代器，从头往后遍历
+                    // HashMap: 通过关键方法getNode(int hash, Object key)，计算hash获得
+                    // TreeMap: 从根节点往下遍历
+                    return AbstractMap.this.containsKey(k);
+                }
+            };
+            keySet = ks;
+        }
+        return ks;
+    }
+
+    public Collection<V> values() {
+        Collection<V> vals = values;
+        if (vals == null) {
+            vals = new AbstractCollection<V>() {
+                public Iterator<V> iterator() {
+                    return new Iterator<V>() {
+                        private Iterator<K, V> i = entrySet().iterator();
+
+                        public boolean hasNext() {
+                            return i.hasNext();
+                        }
+
+                        public V next() {
+                            // i.next()获得的是Entry<K, V>
+                            return i.next().getValue();
+                        }
+
+                        public void remove() {
+                            i.remove();
+                        }
+                    };
+                }
+
+                public int size() {
+                    return AbstractMap.this.size();
+                }
+
+                public boolean isEmpty() {
+                    return AbstractMap.this.isEmpty();
+                }
+
+                public void clear() {
+                    AbstractMap.this.clear();
+                }
+
+                public boolean contains(Object v) {
+                    return AbstractMap.this.containsKey(v);
+                }         
+            };
+            values = vals;
+        }
+        return vals;
+    }
+
+    // 最核心的抽象方法!!!!!
+    public abstract Set<Entry<K, V>> entrySet();
+
+    public static class SimpleEntry<K, V> implements Entry<K, V>, java.io.Serializable {
+        private final K key;
+
+        private V value;
+
+        public SimpleEntry(K key, V value) {
+            this.key = key;
+            this.value = value;
+        }
+
+        // ..
+
+        public int hashCode() {
+            return (key == null ? 0 : key.hashCode()) ^ (value == null ? 0 : value.hashCode());
+        }
+    }
+
+    // 子类继承后重写实现
+    public V put(K key, V value) {
+        throw new UnsupportedOperationException();
+    }
+
+    // get/containsKey/containsValue，都是通过entrySet的迭代器遍历
+
+    public V get(Object key) {
+        Iterator<Entry<K, V>> i = entrySet().iterator();
+        if (key == null) {
+            while (i.hasNext()) {
+                Entry<K, V> e = i.next();
+                if (e.getKey() == null)
+                    return e.getValue();
+            }
+        } else {
+            while (i.hasNext()) {
+                Entry<K, V> e = i.next();
+                if (key.equals(e.getKey()))
+                    return e.getValue();
+            }
+        }
+        return null;
+    }
+
+    public boolean containsKey(Object key) {
+        // 遍历entrySet
+    }
+
+    public boolean containsValue(Object value) {
+        // 遍历entrySet
+    }
+}
+```
+
+## **1.2.2 HashMap**
 
 底层实现：数组 + 链表/红黑树
 
@@ -129,7 +330,7 @@ HashMap则对应的制定了hash规则：给定键，通过**其hash值能快速
 
 通过该规则，在哈希冲突不严重的情况下，查找效率为O(1)
 
-## **1.2.2 TreeMap**
+## **1.2.3 TreeMap**
 
 底层实现：二叉树
 
