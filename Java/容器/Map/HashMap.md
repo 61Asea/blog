@@ -106,7 +106,15 @@ static final int UNTREEIFY_THRESHOLD = 6；
 static final int MIN_TREEIFY_CAPACITY = 64;
 ```
 
-### **1.4.1 转换为红黑树容器**
+### **1.4.1 TreeNode分析**
+
+```java
+static final class TreeNode<K, V> extends LinkedHashMap.Entry<K, V> {
+
+}
+```
+
+### **1.4.2 转换为红黑树容器**
 
 ```java
 // 因为树节点的大小是常规节点的两倍，所以我们仅在容器包含足够的节点的时候再使用他们（TREEIFY_THRESHOLD = 8），当长度变为6时，再转换回普通的桶链表。在使用分布良好的哈希码，转化为红黑树容器的情况将极少，理想情况下遵循泊松分布
@@ -143,10 +151,14 @@ static final int MIN_TREEIFY_CAPACITY = 64;
 
 ```java
 final void treeifyBin(Node<K,V>[] tab, int hash) {
+    // n为底层数组的容量，index为hash对应的桶下标，e为对应桶头结点
     int n, index; Node<K,V> e;
     if (tab == null || (n = tab.length) < MIN_TREEIFY_CAPACITY)
         // 优先考虑resize
         resize();
+    else if ((e = tab[index = (n - 1) & hash]) != null) {
+        TreeNode<K, V> hd = null, tl = null;
+    }
 }
 ```
 
@@ -155,16 +167,17 @@ final void treeifyBin(Node<K,V>[] tab, int hash) {
     因为如果桶的数量过少，又发生了严重的hash碰撞，那么根本问题是数组能表达的意义太少了（桶数量过少），所以此时树化意义不大，会引入更大的内存空间浪费，优先考虑扩容
 
 
-### **1.4.2 退化为链表**
+### **1.4.3 退化为链表**
 
-在扩容后，如果某个桶的节点数量少于UNTREEIFY_THRESHOLD时，会退化为链表
-
+在扩容操作中，如果某个桶的节点数量少于UNTREEIFY_THRESHOLD时，会退化为链表
 
 # **2. 源码分析**
 
 ## **2.1 基本类**
 
-### **2.1.1 Entry**
+包括了各种迭代器相关的类，Entry键值对，桶链表结点，桶红黑树结点
+
+### **2.1.1 键值对结构**
 
 HashMap中对于键值对的定义为：
 - Node（链表节点）
@@ -231,9 +244,7 @@ public class HashMap<K, V> extends AbstractMap<K, V> implements Map<K, V> {
 
 ### **TreeNode红黑树节点**
 
-```java
-
-```
+见1.4.1
 
 需要注意Entry的equals方法，会调用key的equals方法和value的equals方法
 
@@ -245,14 +256,6 @@ public static boolean equals(Object a, Object b) {
 ```
 
 如果使用自定义对象作为key时，且认为对象的某些成员属性相等则为相同对象，必须重写Key对象的hashCode和equals方法
-
-
-<!-- 
-挪到getNode方法讲
-
-在阿里开发规范中提及到HashMap使用对象作为Key的一些约定：
-
-    如果自定义对象作为作为Map的键，那么必须重写hashCode和eqauls方法 -->
 
 ## **2.1.2 迭代器模式**
 
@@ -476,11 +479,194 @@ public class HashMap<K, V> extends AbstractMap<K, V> implements Map<K, V>, Clone
     // 默认的最大负载因子
     static final float DEFAULT_LOAD_FACTOR = 0.75f;
 
-    // 红黑树的一些静态参数
+    // 底层数组
+    transient Node<K, V> table;
+
+    transient Set<Map.Entry<K, V>> entrySet;
+
+    // 键值对的个数
+    transient int size;
+
+    // 快速失效机制
+    transient int modCount;
+
+    // 触发下一次扩容的长度
+    int threshold;
+
+    final float loadFactor;
+
+    public HashMap() {
+        // 设置容器的负载因子默认值，0.75
+        this.loadFactor = DEFAULT_LOAD_FACTOR;
+    }
 }
 ```
 
-涉及到了
+以上参数/成员变量涉及到数组的初始化问题，以及扩容的问题，数组的初始容量为16，触发下一次扩容的长度为12
+
+## **2.3 关键方法**
+
+从Map接口的实现入手，包括：
+- put(K, V)
+
+    设值putVal、扩容resize、桶链表插入（尾插法）、树化treeifyBin
+
+- get(K)
+
+    哈希函数获取元素getNode
+
+- remove(Object)
+
+    删除节点removeNode(int hash, Object key, Object value, boolean matchValue, boolean movable)
+
+### **2.3.1 put(K, V)**
+
+在接口方法实现上调用了putVal方法，传入的hash是经过预处理的
+
+```java
+public V put(K key, V value) {
+    return putVal(hash(key), key, value, false, false);
+}
+```
+
+分析putVal的代码，可以发现哈希函数、**链表尾插**、树化操作和**扩容**
+
+```java
+final V putVal(int hash, K key, V value, boolean onlyIfAbsent, boolean evict) {
+    Node<K, V>[] tab;
+    // p表示该键值对所对应的桶节点，p从头节点开始往下变化
+    Node<K, V> p;
+    // n代表底层数组的容量，i代表哈希化后的数组下标
+    int n, i;
+    if ((tab = table) != null || (n = tab.length) == 0)
+        // 未初始化，通过扩容，生成扩容后的底层数组并赋值给table
+        n = (tab = resize()).length;
+    
+    // 哈希函数 (hash &(数组容量 - 1))
+    if ((p = tab[i = (n - 1) & hash]) == null)
+        // 创建链表头
+        tab[i] = newNode(hash, key, value, null);
+    else {
+        // e若不为空，说明该关键字已有键值对存储，会对其进行覆盖操作
+        // k是临时变量，记录桶链表下每个节点的关键字
+        Node<K, V> e; K k;
+        if (p.hash == hash && ((k = p.key) == key || key != null && key.equals(k)))
+            // 桶链表的头节点就是关键字的键值对，则直接进行覆盖操作
+            e = p;
+        else if (p instanceof TreeNode)
+            // 桶已经树化了
+            e ((TreeNode<K, V>) p).putTreeVal(this, tab, hash, key, value);
+        else {
+            // 尾插法，从链表头往下遍历，若有找到关键字的键值对，则覆盖；否则，新创建一个节点，加入到链表尾中
+            for (int binCount = 0; ; ++binCount) {
+                if ((e = p.next) == null) {
+                    // 已经遍历到最尾部，创建新的对象
+                    p.next = newNode(hash, key, value, null);
+                    if (binCount >= TREEIFY_THRESHOLD - 1)
+                        // put完之后发现大于等于8，则尝试将桶树化
+                        treeifyBin(tab, hash);
+                    break;
+                }
+
+                if (e.hash == hash && ((k = e.key) == key || (key != null && key.equals(k))))
+                    // 关键字已经有了键值对，直接赋值
+                    break;
+                
+                // p变成下一个节点
+                p = e;
+            }
+        }
+
+        if (e != null) {
+            // 关键字已经有了键值对，直接复制
+            V oldValue = e.value;
+            if (!onlyIfAbsent || oldValue == null)
+                // onlyIfAbsent为true时，不覆盖
+                e.value = value;
+            afterNodeAccess(e);
+            return oldValue;
+        }
+    }
+
+    // 注意扩容的时机，如果是已经有值，进行覆盖的，不会扩容；只有新加入键值对节点，才会考虑扩容
+    ++modCount;
+    if (++size > threshold)
+        // size自增长1后，与下次扩容长度做对比，threshold = 当前数组的容量 * 负载因子
+        resize();
+    afterNodeInsertion(evict);
+    return null;
+}
+```
+
+分析一下putVal的基本操作：
+1. 没有初始化过底层数组，则先进行resize扩容
+
+2. 根据**哈希函数哈希化，得到桶下标**
+
+3. 如果没有桶元素，则当前键值对将作为桶链表的头，并跳转到第八步
+
+4. 如果有桶元素，则先判断桶的头节点是否为给定的关键字（判断关键字是否已经有键值对），有的话则跳转到第八步去覆盖值；没有的化跳转到第五步
+
+5. 判断**是否当前桶已经树化**，是的话则直接根据红黑树规则进行对比和插入（如果有叶子结点为关键字键值对，一样跳转到第八步进行覆盖操作）；否的话，往下一步走
+
+6. 通过**尾插法**，对桶往下一直遍历，若找到存在已有键值对，则直接返回等待覆盖；若无的话，将新结点插入到链表尾部，并跳转到第七步
+
+7. 如果发现当前的**桶长度大于等于8**时，尝试将桶树化
+
+8. 如果是已有键值对，则覆盖值，并返回旧值；反之，则判断是否应该扩容，扩容的依据在于**当前的size是否超过了threshold（threshold = size * 0.75）**
+
+其中第二、六、七、八步为重点操作，涉及到了扩容、桶树化和红黑树插入，红黑树相关的内容在本文章的第一节有讲解到，接下来重点看下扩容方法
+
+```java
+// 扩容方法，面试重灾区
+final Node<K, V>[] resize() {
+    Node<K, V>[] oldTab = table;
+    // 如果旧容量为0，说明table还没有被初始化
+    int oldCap = (oldTab == null) ? 0 : oldTab.length;
+    // 一般是oldCap * DEFAULT_LOAD_FACTOR(0.75)
+    int oldThr = threshold;
+    int newCap, newThr = 0;
+
+    if (oldCap > 0) {
+        // 大于0，说明已经初始化过
+        if (oldCap >= MAXIMUM_CAPACITY) {
+            // 触发扩容长度调到2的31方，意味着不会再扩容
+            threshold = Integet.MAX_VALUE;
+            // 超过最大长度，不会再扩容
+            return oldTab;
+        }
+
+        // 数组容量变为之前的两倍，并且旧的容量应大于16，才会将下次扩容的值调大
+        else if ((newCap = oldCap << 1) < MAXIMUM_CAPACITY && oldCap >= DEFAULT_INITIAL_CAPACITY)
+            // 16 12
+            // 32 24
+            // 64 48
+            newThr = oldThr << 1;
+    }
+    // 使用传入初始容量的构造器
+    else if (oldThr > 0)
+        // oldCap = 0，还没被初始化
+        // 新的数组容量为，传入HashMap构造器的(initialCapacity - 1)的二进制位全为1的值
+        newCap = oldThr;
+    else {
+        // 没有被初始化过
+        // 默认初始化长度为16
+        newCap = DEFAULT_INITIAL_CAPACITY; 
+        // 默认下次扩容长度为12
+        newThr = (int) (DEFAULT_INITIAL_CAPACITY * DEFAULT_LOAD_FACTOR); 
+    }
+
+    if (newThr == 0) {
+        // 使用特别的构造器导致
+        float ft = (float) newCap * loadFactor;
+        newThr = (newCap < MAXIMUM_CAPACITY && ft < (float) MAXIMUM_CAPACITY ? (int) ft : Integer.MAX_VALUE);
+    }
+    threshold = newThr;
+
+    // 转移旧的数组到新数组中
+}
+```
+
 
 # 参考
 - [hashCode()简单分析](https://blog.csdn.net/changrj6/article/details/100043822)
