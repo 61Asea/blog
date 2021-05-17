@@ -89,7 +89,11 @@ HashMap在实现上采用了拉链法，在JDK8之后还加入了红黑树，以
 
 ## **1.4 红黑树还是链表？**
 
-内容太多，专门开了一节
+内容太多，专门开了一节，讲一下元素什么时候从桶链表变成红黑树
+
+关于红黑树的数据结构介绍：
+
+> [红黑树](https://asea-cch.life/archives/redblacktree)
 
 ```java
 // 桶链表变成红黑树结点的长度
@@ -102,7 +106,59 @@ static final int UNTREEIFY_THRESHOLD = 6；
 static final int MIN_TREEIFY_CAPACITY = 64;
 ```
 
-> [红黑树](https://asea-cch.life/archives/)
+### **1.4.1 转换为红黑树容器**
+
+```java
+// 因为树节点的大小是常规节点的两倍，所以我们仅在容器包含足够的节点的时候再使用他们（TREEIFY_THRESHOLD = 8），当长度变为6时，再转换回普通的桶链表。在使用分布良好的哈希码，转化为红黑树容器的情况将极少，理想情况下遵循泊松分布
+
+/**
+* Because TreeNodes are about twice the size of regular nodes, we
+* use them only when bins contain enough nodes to warrant use
+* (see TREEIFY_THRESHOLD). And when they become too small (due to
+* removal or resizing) they are converted back to plain bins.  In
+* usages with well-distributed user hashCodes, tree bins are
+* rarely used.  Ideally, under random hashCodes, the frequency of
+* nodes in bins follows a Poisson distribution
+* (http://en.wikipedia.org/wiki/Poisson_distribution) with a
+* parameter of about 0.5 on average for the default resizing
+* threshold of 0.75, although with a large variance because of
+* resizing granularity. Ignoring variance, the expected
+* occurrences of list size k are (exp(-0.5) * pow(0.5, k) /
+* factorial(k)). The first values are:
+*
+* 0:    0.60653066
+* 1:    0.30326533
+* 2:    0.07581633
+* 3:    0.01263606
+* 4:    0.00157952
+* 5:    0.00015795
+* 6:    0.00001316
+* 7:    0.00000094
+* 8:    0.00000006
+* more: less than 1 in ten million
+*/
+```
+
+当桶链表的节点达到8个时，put第九个的时候，**可能会触发**桶链表变成红黑树的过程
+
+```java
+final void treeifyBin(Node<K,V>[] tab, int hash) {
+    int n, index; Node<K,V> e;
+    if (tab == null || (n = tab.length) < MIN_TREEIFY_CAPACITY)
+        // 优先考虑resize
+        resize();
+}
+```
+
+但是这里为什么提的是**可能**呢，因为在转化为红黑树的方法中，还有一段关于MIN_TREEIFY_CAPACITY（能转化桶为红黑树的最小数组容量）的判断，如果当前数组容量并没有达到MIN_TREEIFY_CAPACITY，则**优先考虑扩容**
+
+    因为如果桶的数量过少，又发生了严重的hash碰撞，那么根本问题是数组能表达的意义太少了（桶数量过少），所以此时树化意义不大，会引入更大的内存空间浪费，优先考虑扩容
+
+
+### **1.4.2 退化为链表**
+
+在扩容后，如果某个桶的节点数量少于UNTREEIFY_THRESHOLD时，会退化为链表
+
 
 # **2. 源码分析**
 
@@ -435,3 +491,4 @@ public class HashMap<K, V> extends AbstractMap<K, V> implements Map<K, V>, Clone
 
 # 重点参考
 - [JDK1.8以后的hashmap为什么在链表长度为8的时候变为红黑树](https://blog.csdn.net/danxiaodeshitou/article/details/108175535)
+- [关于HashMap底层实现的一些理解](https://blog.csdn.net/opt1997/article/details/104783005)
