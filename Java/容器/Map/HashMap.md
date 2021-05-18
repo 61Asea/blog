@@ -108,11 +108,7 @@ static final int MIN_TREEIFY_CAPACITY = 64;
 
 ### **1.4.1 TreeNode分析**
 
-```java
-static final class TreeNode<K, V> extends LinkedHashMap.Entry<K, V> {
-
-}
-```
+详情请见上面的红黑树文章
 
 ### **1.4.2 转换为红黑树容器**
 
@@ -171,19 +167,15 @@ final void treeifyBin(Node<K,V>[] tab, int hash) {
 
 在扩容操作中，如果某个桶的节点数量少于UNTREEIFY_THRESHOLD时，会退化为链表
 
-# **2. 源码分析**
-
-## **2.1 基本类**
+# **2. 基础设施**
 
 包括了各种迭代器相关的类，Entry键值对，桶链表结点，桶红黑树结点
-
-### **2.1.1 键值对结构**
 
 HashMap中对于键值对的定义为：
 - Node（链表节点）
 - TreeNode(红黑树节点)
 
-### **Node链表节点**
+### **2.1 Node链表节点**
 
 ```java
 public class HashMap<K, V> extends AbstractMap<K, V> implements Map<K, V> {
@@ -242,7 +234,7 @@ public class HashMap<K, V> extends AbstractMap<K, V> implements Map<K, V> {
 }
 ```
 
-### **TreeNode红黑树节点**
+## **2.2 TreeNode红黑树节点**
 
 见1.4.1
 
@@ -257,7 +249,7 @@ public static boolean equals(Object a, Object b) {
 
 如果使用自定义对象作为key时，且认为对象的某些成员属性相等则为相同对象，必须重写Key对象的hashCode和equals方法
 
-## **2.1.2 迭代器模式**
+## **2.3 迭代器模式**
 
 不管是迭代键集合、值集合还是键值对集合，使用的迭代器都继承了同一个抽象父类**HashIterator**
 
@@ -347,7 +339,7 @@ final class ValueIterator extends HashIterator implements Iterator<Map.Entry<K, 
 }
 ```
 
-## **2.1.3 EntrySet**
+### **2.3.1 EntrySet**
 
 实现了Map接口获取entrySet的方法，可以从Set的泛型看出返回的Entry需要满足Map.Entry接口的规范：
 
@@ -429,7 +421,7 @@ final class EntrySet extends AbstractSet<Map.Entry<K, V>> {
 
 EntrySet其实本身并没有存储结构，是对底层数组的一层封装，最重要的是定义了entrySet的遍历方式，而更具体的细节，在于外部类的方法，即对**哈希化的运用**
 
-## **2.1.4 KeySet**
+### **2.3.2 KeySet**
 
 基本与EntrySet一致，主要是迭代时，传入的是entry的关键字
 
@@ -449,7 +441,7 @@ final class KeySet extends AbstractSet<K> {
 }
 ```
 
-## **2.1.5 Values**
+### **2.3.3 Values**
 
 values可以有重复的，继承的是抽象集合类，主要区别是迭代时，传入entry的值
 
@@ -466,7 +458,7 @@ final class Values extends AbstractCollection<V> {
 }
 ```
 
-## **2.2 默认参数和静态方法**
+## **2.4 默认参数和静态方法**
 
 ```java
 public class HashMap<K, V> extends AbstractMap<K, V> implements Map<K, V>, Cloneable, Serializable {
@@ -504,22 +496,69 @@ public class HashMap<K, V> extends AbstractMap<K, V> implements Map<K, V>, Clone
 
 以上参数/成员变量涉及到数组的初始化问题，以及扩容的问题，数组的初始容量为16，触发下一次扩容的长度为12
 
-## **2.3 关键方法**
+# **3 关键方法**
 
 从Map接口的实现入手，包括：
-- put(K, V)
-
-    设值putVal、扩容resize、桶链表插入（尾插法）、树化treeifyBin
 
 - get(K)
 
     哈希函数获取元素getNode
 
+- put(K, V)
+
+    设值putVal、扩容resize、桶链表插入（尾插法）、树化treeifyBin
+
+- resize()
+
+    扩容很重要，会介绍关于节点重哈希化的经典公式，还有头插法导致的扩容死循环问题
+
 - remove(Object)
 
     删除节点removeNode(int hash, Object key, Object value, boolean matchValue, boolean movable)
 
-### **2.3.1 put(K, V)**
+## **3.1 get(Object key)**
+
+在接口方法实现上调用了getNode(int hash, key)方法
+
+```java
+public V get(Object key) {
+    Node<K, V> e;
+    // 使用hash方法，将关键字的哈希码进一步处理
+    return (e = getNode(hash(key), key)) == null ? null : e.value;
+}
+``` 
+
+getNode方法根据进一步处理过的哈希码，通过哈希函数哈希化得到数组下标
+
+```java
+final Node<K, V> getNode(int hash, Object key) {
+    // tab为底层数组，first为桶的头结点，e为桶遍历时的节点，n为数组长度，k为e的键
+    Node<K, V>[] tab; Node<K, V> first, e; int n; K k;
+
+    // 哈希函数：(n - 1) & hash，计算关键字所在的桶
+    if ((tab = table) != null && (n = tab.length) > 0 && (first = tab[(n - 1) & hash]) != null) {
+        if (first.hash == hash && ((k = first.key) == key || (key != null && key.equals(k)) )
+            // 如果头节点就是要查找的键值对，直接返回
+            return first;
+        
+        if ((e = first.next) != null) {
+            // 如果当前桶树化，则红黑树查找
+            if (first instanceof TreeNode)
+                return ((TreeNode<K, V>)first).getTreeNode(hash, key);
+            do {
+                if (e.hash == hash && ((k = e.key) == key || (key != null && key.equals(k))))
+                    return e;
+            } while((e = e.next) != null);
+        }
+    }
+    return null;
+}
+```
+
+如果是红黑树桶，则使用红黑树的查找，效率为O（logN）
+如果是链表桶，则从头往下遍历，效率为O（N），平均遍历长度等于负载因子
+
+## **3.2 put(K, V)**
 
 在接口方法实现上调用了putVal方法，传入的hash是经过预处理的
 
@@ -529,7 +568,7 @@ public V put(K key, V value) {
 }
 ```
 
-分析putVal的代码，可以发现哈希函数、**链表尾插**、树化操作和**扩容**
+分析putVal的代码，它涉及到了：哈希函数、**链表尾插**、树化操作和**扩容**
 
 ```java
 final V putVal(int hash, K key, V value, boolean onlyIfAbsent, boolean evict) {
@@ -599,26 +638,36 @@ final V putVal(int hash, K key, V value, boolean onlyIfAbsent, boolean evict) {
 ```
 
 分析一下putVal的基本操作：
+
 1. 没有初始化过底层数组，则先进行resize扩容
 
 2. 根据**哈希函数哈希化，得到桶下标**
 
 3. 如果没有桶元素，则当前键值对将作为桶链表的头，并跳转到第八步
 
-4. 如果有桶元素，则先判断桶的头节点是否为给定的关键字（判断关键字是否已经有键值对），有的话则跳转到第八步去覆盖值；没有的化跳转到第五步
+4. 如果有桶元素，则先判断桶的头节点是否为给定的关键字，判断关键字是否已经有键值对，有的话则跳转到第八步去覆盖值；没有的话往下一步走
 
 5. 判断**是否当前桶已经树化**，是的话则直接根据红黑树规则进行对比和插入（如果有叶子结点为关键字键值对，一样跳转到第八步进行覆盖操作）；否的话，往下一步走
 
-6. 通过**尾插法**，对桶往下一直遍历，若找到存在已有键值对，则直接返回等待覆盖；若无的话，将新结点插入到链表尾部，并跳转到第七步
+6. 通过**尾插法**，对桶往下一直遍历，若找到存在已有键值对，则跳转到第八步等待覆盖；若无的话，将新结点插入到链表尾部，往第七步走
 
-7. 如果发现当前的**桶长度大于等于8**时，尝试将桶树化
+7. 如果发现当前的**桶长度大于等于8**时，尝试将桶树化，并往下一步走
 
 8. 如果是已有键值对，则覆盖值，并返回旧值；反之，则判断是否应该扩容，扩容的依据在于**当前的size是否超过了threshold（threshold = size * 0.75）**
 
 其中第二、六、七、八步为重点操作，涉及到了扩容、桶树化和红黑树插入，红黑树相关的内容在本文章的第一节有讲解到，接下来重点看下扩容方法
 
+## **3.3 resize()**
+
+扩容的场景：
+- HashMap初始化后，第一次putVal，会通过**扩容进行初始化**。如果使用自定义负载因子和初始容量的构造器，则按照自定义进行扩容
+- putVal后，发现当前**size > threshold**，根据装填因子和初始容量**后续扩容**
+
+扩容会将数组容量变大，计算下一次扩容的长度（正常比容量小0.25倍），并将当前数组的数据转移到新的数组
+
+    在JDK8之前，使用头插法插入元素，这可能导致多线程下，扩容和插入同时操作，导致扩容死循环
+
 ```java
-// 扩容方法，面试重灾区
 final Node<K, V>[] resize() {
     Node<K, V>[] oldTab = table;
     // 如果旧容量为0，说明table还没有被初始化
@@ -664,9 +713,165 @@ final Node<K, V>[] resize() {
     threshold = newThr;
 
     // 转移旧的数组到新数组中
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    Node<K, V>][] newTab = (Node<K, V>[]) new Node[newCap];
+    // 设置当前的table为newTab
+    table = newTab;
+    if (oldTab != null) {
+        // 迭代旧数组的每个桶
+        for (int j = 0; j < oldCap; ++j) {
+            // j下标元素对应的桶
+            Node<K, V> e;
+            if ((e = oldTab[j]) != null) {
+                oldTab[j] = null;
+                if (e.next == null)
+                    // 桶只有一个节点
+                    newTab[e.hash & (newCap - 1)] = e;
+                else if (e instanceof TreeNode)
+                    // 桶树化，尝试将树变小/退化为链表
+                    (TreeNode<K, V>e).split(this, newTab, j, oldCap);
+                else {
+                    // 桶链表
+                    Node<K, V> loHead = null, loTail = null;
+                    Node<K, V> hiHead = null, hiTail = null;
+                    Node<K, V> next;
+                    do {
+                        next = e.next;
+                        // 将桶元素划分为两份
+                        if ((e.hash & oldCap) == 0) {
+                            if (loHead == null)
+                                loHead = e;
+                            else
+                                loTail.next = e;
+                            loTail = e;
+                        }
+                        else {
+                            if (hiHead == null)
+                                hiHead = e;
+                            else
+                                hiTail = e;
+                            hiTail = e;
+                        }
+                    } while ((e = next) != null);
+                    if (loTail != null) {
+                        // 把在旧数组的桶的next引用置空，因为现在处于新数组桶的队尾
+                        loTail.next = null;
+                        newTab[j] = loHead;
+                    }
+                    if (hiTail != null) {
+                        hiTail.next = null;
+                        newTab[j + oldCap] = hiHead;
+                    }
+                }
+            }
+        }
+    }
+    return newTab;
 }
 ```
 
+通过loHead/loTail和hiHead/hiTail来划分桶全部节点在扩容后的重哈希化，重点在于(e.hash & oldCap == 0)的公式推导：
+
+    如果扩容之后，元素仍然在旧索引位置，可以获得公式：
+    (2oldCap - 1) & e.hash = (oldCap - 1) & e.hash
+    =>
+    2 (oldCap & e.hash) = oldCap & e.hash
+    => 
+    oldCap & e.hash = 0, 上述等式成立
+
+所以使用该方法，可以快速将桶里的节点分成两份，一份是旧位置，一份是旧位置 + oldCap的位置
+
+DEMO：
+
+假设使用默认构造器的HashMap，当前数组情况为：
+[{Entry1, Entry2, Entry3, Entry4}, {}, {}, ..., {}]，共13个桶数组
+
+首先扩容为32个桶，并设置下一次扩容的桶数为12 * 2 = 24个桶：
+
+[{}, {}, {}, {}, ..., {}]，共32个空桶的数组
+
+假设3通过(hash & oldCap == 0)， Entry1和Entry3结果为0，Entry2和Entry4结果不为0：
+
+LoHead = Entry1, LoTail = Entry3
+HiHead = Entry2, HiTail = Entry4
+
+[{Entry1, Entry3}(第1个桶), {}, {}, {}, ..., {Entry2, Entry4}（第17个桶）, {}]，共32个桶的数组
+
+## **扩容和插入可能会导致的死循环问题**
+
+## **3.4 remove(Object key)**
+
+老规矩，先看一下接口实现
+
+```java
+public V remove(Object key) {
+    Node<K, V> e;
+    return (e = removeNode(hash(key), key, null, false, true)) == null ? null : e.value;
+}
+```
+
+```java
+public boolean remove(Object key, Object value) {
+    Node<K, V> e;
+    return (e = removeNode(hash(key), key, value, true, true)) != null;
+}
+```
+
+也是通过一个私有方法removeNode来实现，同样老配方，先对关键字的哈希码进一步处理
+
+    remove对节点的删除，会触发扩容、树退化吗？
+
+```java
+final Node<K, V> removeNode(int hash, Object key, Object value, boolean matchValue, boolean movable) {
+    // p为最终要删除的节点，index为要删除的节点的桶下标
+    Node<K, V>[] tab; Node<K, V> p; int n, index;
+
+    // 哈希化得到下标
+    if ((tab = table) != null && (n = tab.length) > 0 && (p = tab[index = (n - 1) & hash]) != null) {
+        // node是桶头节点，e用于迭代器使用，可能为null
+        Node<K, V> node = null, e; K k; V v;
+
+        // tmd，怎么不复用getNode ...
+        if (p.hash == hash && ((k = e.key) == key || (key != null && key.equals(k))))
+            node = p;
+        else if ((e = p.next) != null) {
+            if (p instanceof TreeNode)
+                node = ((Tree<K, V>)p).getTreeNode(hash, key);
+            else {
+                do {
+                    if (e.hash == hash &&
+                        ((k = e.key) == key ||
+                            (key != null && key.equals(k)))) {
+                        node = e;
+                        break;
+                    }
+                    // p为删除节点的上一个节点
+                    p = e;
+                } while ((e = e.next) != null)
+            }
+        }
+
+        // 根据不同的外层接口来决定要不要匹配值
+        if (node != null && (!matchValue || (v = node.value) == value || (value != null && value.equals(v)))) {
+            // 关键来了，调用了树的删除节点，该方法在节点个数处于[2, 6]区间时，可能会触发退化链表，关键还要看树的结构
+            if (node instanceof TreeNode)
+                // removeTreeNode调用untreeify进行退化
+                ((TreeNode<K,V>)node).removeTreeNode(this, tab, movable);
+            else if (node == p)
+                // 节点跟上一个节点相同，说明是链表头，直接将链表头设置为下一个节点
+                tab[index] = node.next;
+            else
+                // 上一个节点的next指向当前节点的下一个
+                p.next = node.next;
+            ++modCount;
+            --size;
+            afterNodeRemoval(node);
+            return node;
+        }
+    }
+    return null;
+}
+```
 
 # 参考
 - [hashCode()简单分析](https://blog.csdn.net/changrj6/article/details/100043822)
@@ -675,6 +880,9 @@ final Node<K, V>[] resize() {
 - [对象的==和equals](https://www.cnblogs.com/pu20065226/p/8530010.html)
 - [cyc2018-HashMap](https://www.cyc2018.xyz/Java/Java%20%E5%AE%B9%E5%99%A8.html#hashmap)
 
+- [HashMap中插入数据用的头插法还是尾插法](https://blog.csdn.net/u010257931/article/details/103143627)
+
 # 重点参考
 - [JDK1.8以后的hashmap为什么在链表长度为8的时候变为红黑树](https://blog.csdn.net/danxiaodeshitou/article/details/108175535)
 - [关于HashMap底层实现的一些理解](https://blog.csdn.net/opt1997/article/details/104783005)
+- [HashMap扩容时的rehash方法中(e.hash & oldCap) == 0算法推导](https://blog.csdn.net/u010425839/article/details/106620440/)
