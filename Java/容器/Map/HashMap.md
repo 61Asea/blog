@@ -1085,6 +1085,79 @@ final void treeifyBin(Node<K, V>[] tab, int hash) {
 
 ## **4.2 HashMap的负载因子问题**
 
+1. 指定初始容量
+
+    > [设置HashMap的初始容量多少合适呢？](https://blog.csdn.net/sufu1065/article/details/106760943)
+
+    ```java
+    public HashMap(int initialCapacity) {
+        // ...
+        this.loadFactor = loadFactor;
+        this.threshold = tableSizeFor(initialCapacity);
+    }
+
+    static final int tableSizeFor(int cap) {
+        int n = cap - 1;
+        n |= n >>> 1;
+        n |= n >>> 2;
+        n |= n >>> 4;
+        n |= n >>> 8;
+        n |= n >>> 16;
+        return (n < 0) ? 1 : (n >= MAXIMUM_CAPACITY) ? MAXIMUM_CAPACITY : n + 1;
+    }
+    ```
+
+    HashMap会将传入的initialCapacity作为一个标准，通过tableSizeFor方法计算出最接近它大小的2的n次方幂（传入7 -> 变成8；传入9 -> 变成16），将这个值设为threshold，**此时threshold不属于扩容长度，而是初始化长度**
+
+    ```java
+    final V putVal(int hash, K key, V value, boolean onlyIfAbsent, boolean evict) {
+        // ...
+        if ((tab = table) == null || (n = tab.length) == 0)
+            n = (tab = resize()).length;
+        // ...
+    }
+    ```
+
+    table为null，所以会通过resize()方法进行初始化，**这一次的扩容并没有内存复制**
+
+    ```java
+    final Node<K, V>[] resize() {
+        Node<K, V>[] oldTab = table;
+        int oldCap = (oldTab) == null ? 0 : oldTab.length; // 未初始化，长度为0
+        int oldThr = threshold; // 使用了(initialCapacity)构造器，值为2的n次幂
+        int newCap, newThr;
+        //...
+        else if (oldThr > 0) {
+            // 初始化的数组长度为newCap，而newCap的值等于构造器传入时对threshold的赋值
+            newCap = oldThr;
+        }
+        // ...
+        if (newThr == 0) {
+            // 在上面通过threshold指定了第一次初始化数组的长度，此时需要重新计算threshold，将其变成扩容长度
+            float ft = (float)newCap * loadFactor;
+
+            newThr = (newCap < MAXIMUM_CAPACITY && ft < (float)MAXIMUM_CAPACITY ?
+                      (int)ft : Integer.MAX_VALUE);
+        }
+    }
+    ```
+
+    可以看出，假设我们需要在HashMap存入7个元素，指定initialCapacity为7并不能解决问题，因为首先初始化的数组容量是8，其次，扩容长度是数组容量的四分之三，即6，所以还是会触发扩容
+
+    可以通过公式计算：
+
+        initialCapacity = expectSize / 0.75f + 1.0f
+
+    或者通过数组长度对2的n次方幂递增推算：
+
+        7个元素 =》 8数组长度 =》 6 扩容长度， 不行
+
+        则尝试将8数组长度修改为2的4次方：
+
+        16数组长度 =》 12扩容长度，行
+
+        所以答案为[9, 16]中的一个值均可
+
 ## **4.3 HashMap的结构问题**
 
 ## **4.4 哈希表，哈希冲突，解决哈希冲突的方法**
