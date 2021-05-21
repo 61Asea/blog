@@ -181,5 +181,9 @@ public V get(Object key) {
 
     从链表的尾往头走，为最近访问的次序，尾部为最近的访问元素
 
+## **LRU**
+
+> [LRU置换算法](https://asea-cch.life/achrives/lru)
+
 # 参考
 - [彻头彻尾理解 LinkedHashMap](https://blog.csdn.net/justloveyou_/article/details/71713781)
