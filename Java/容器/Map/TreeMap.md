@@ -1,15 +1,15 @@
 # TreeMap
 
-> [Java容器](https://asea-cch.life/achirves/java容器)
+> [Java容器](https://asea-cch.life/archives/java容器)
 
 在Java容器中介绍了Map接口的实现，作为键值对映射存储，我们可以通过哈希表作为底层结构进行存储，实现快速查找的功能；也可以通过多在底层数组上，多维护一个双向链表，提供按插入顺序或按访问顺序迭代的功能
 
-> [HashMap](https://asea-cch.life/achirves/hashmap)
-> [LinkedHashMap](https://asea-cch.life/achirves/linkedhashmap)
+> [HashMap](https://asea-cch.life/archives/hashmap)
+> [LinkedHashMap](https://asea-cch.life/archives/linkedhashmap)
 
 在本文，将介绍以**二叉搜索树**为底层结构实现的Map，它相比HashMap查找速度较慢，但可以按照**键值的比较结果进行排序**。使用**红黑树**来维持二叉树的平衡，保证在最糟的插入情况下也能达到O(logN)时间复杂度
 
-> [红黑树](https://asea-cch.life/achirves/redblacktree)
+> [红黑树](https://asea-cch.life/archives/redblacktree)
 
 # **1. 基础结构**
 
@@ -28,13 +28,22 @@ public class TreeMap extends AbstractMap<K, V> implements NavigableMap<K, V>, Cl
 
 ## **1.1 NabigableMap接口**
 
-> [NabigableMap](https://asea-cch.life/achirves/java容器#NavigableMap)
+> [NabigableMap](https://asea-cch.life/archives/java容器#NavigableMap)
 
 只要实现了cellingEntry/floorEntry方法，内部通过getCeilingEntry和getFloorEntry方法来实现
 
-getCeilingEntry: 在Map中的每个相邻键区间，符合**给定键值的区间的最大值**所对应的键值对，若找不到则返回null
+    两个方法的核心步骤：
+    1. 从根开始往下遍历
+    2. 如果比当前遍历结点p小，则往p.left遍历；反之亦然
+    3. 与下一层的结点对比时，会根据与其对比的结果，和下一层结点是否有叶子结点方向，作出不同的结果
+    
+    根据floor和ceiling特性不同，对于第三点的叶子结点方向和对比结果，会有不同做法：
 
-    唯一能确定的是遍历节点p的左子树，都比p小，所以结果一定是p
+    如果给定K小于p，如果为floor，则需要判断p是否为p的父节点的左方向，是的话，说明K肯定也小于p的父节点，所以得再往上进行遍历，直到方向为右为止（这个地方也是刚刚K往下遍历时，转换方向的地方）；如果是ceiling，且没有比p再小的结点的话（p.left == null），则无需判断，答案肯定是p了
+
+    如果给定K大于p，如果是floor，且没有比p再大的结点的话(p.right == null)，答案直接就是p；如果是ceiling，需要判断p是否为p的父节点的右方向，是的话，说明K肯定也大于p的父节点，所以得往上遍历，直到p为p的父节点的左子结点为止（这个地方也是K往下遍历时，转换方向的地方）
+
+getCeilingEntry: 在Map中的每个相邻键区间，符合**给定键值的区间的最大值**所对应的键值对，若找不到则返回null
 
 ```java
 final Entry<K, V> getCeilingEntry(K key) {
@@ -42,22 +51,22 @@ final Entry<K, V> getCeilingEntry(K key) {
     while (p != null) {
         int cmp = compare(key, p.key);
         if (cmp < 0) {
-            // cmp小于0，说明比p小，要往p的左边走
             if (p.left != null)
+                // cmp小于0，说明比p小，要往p的左边走
                 p = p.left;
             else
+                // 比p小，且没有比p再小的了，答案就是p
                 return p;
         } else if (cmp > 0) {
             if (p.right != null) {
                 // cmp大于0，说明比p大，要往p的右边走
                 p = p.right;
             } else {
-                // 进来这里，说明该树路径已经没有比key还大的节点，需要返回到最近一次变换树路径方向的位置
                 Entry<K, V> parent = p.parent;
                 Entry<K, V> ch = p;
 
                 // parent == null，则表示找不到，超过了该map的键值范围
-                // ch != parent.right，表示原路返回到之前分叉位置，因为上一个if一直在往右走
+                // 比p大，且没有比p再大的结点，需要判断下p的父节点是不是p的右结点，是的话，说明p的父节点肯定比p小，需要往上遍历到比p大的结点为止
                 while (parent != null && ch == parent.right) {
                     ch = parent;
                     parent = parent.parent;
@@ -82,20 +91,19 @@ final Entry<K, V> getFloorEntry(K key) {
         int cmp = compare(key, p.key);
         if (cmp > 0) {
             if (p.right != null)
-                // cmp大于0，往右走
+                // 比p大，往p的右边走
                 p = p.right;
             else
+                // 比p大，且没有比p再大的结点，则答案就是p
                 return p;
         } else if (cmp < 0) {
             if (p.left != null)
-                // cmp大于0，往左走
                 p = p.left;
             else {
-                // 进来这里，说明该树路径已经没有比key还小的节点，需要返回到最近一次变换树路径方向的位置
                 Entry<K, V> parent = p.parent;
                 Entry<K, V> ch = p;
 
-                // ch != parent.left，表示原路返回到之前的分叉位置，因为上面的if一直在往left走
+                // K比p小，且没有比p再小的结点了，需要判断p是否为p的父节点的左子结点，是的话，说明p的父节点比p还大，那么往上遍历，直到找到p为p父节点右子结点的地方，这时候的K才会比p大
                 while (parent != null && ch == parent.left) {
                     ch = parent;
                     parent = parent.parent;
@@ -181,7 +189,7 @@ static <K, V> TreeMap.Entry<K, V> successor(Entry<K, V> t) {
 
 ## **2. 红黑树**
 
-> [红黑树理论](https://asea-cch.life/achrives/redblacktree)
+> [红黑树理论](https://asea-cch.life/archives/redblacktree)
 
 TreeMap的实现是红黑树算法的实现，如果要了解TreeMap，必须对红黑树有一定的了解
 
@@ -199,3 +207,10 @@ static final class Entry<K, V> implements Map.Entry<K, V> {
 TreeMap通过put/deleteEntry来实现对红黑树的插入和删除，
 
 ## **3. 用途**
+
+    TreeMap为键值有序，LinkedHashMap为插入有序或访问有序
+
+在基于对键值对有排序需求的场合，增删改查为O(logn)级的时间复杂度，但是提供了根据键值区间范围取值，根据键值大小迭代的功能
+
+# 参考
+- []()
