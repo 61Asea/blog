@@ -1146,7 +1146,7 @@ final void treeifyBin(Node<K, V>[] tab, int hash) {
 
     可以通过公式计算：
 
-        initialCapacity = expectSize / 0.75f + 1.0f
+        initialCapacity = expectSize / 0.75f + 1.0f（提升为传参的4/3倍）
 
     或者通过数组长度对2的n次方幂递增推算：
 
