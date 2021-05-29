@@ -653,13 +653,116 @@ private final void addCount(long x, int check) {
 
 ## **3.5 transfer**
 
+transfer由addCount驱动，先了解一下transfer方法对sizeCtl值的运用，有助于我们分析addCount后半段部分
+
+### **3.5.1 初始化新的哈希表**
+
+引入了辅助扩容的概念，通过transferIndex变量作为指针，每个线程在计算获得相对应的桶任务之后，都会CAS修改指针的位置，直到transerIndex = 0位置为止
+
+```java
+private final void transfer(Node<K, V>[] tab, Node<K, V> newTab) {
+    // 记录旧数组的长度
+    int n = tab.length, stride;
+
+    // 获取运行程序机器的CPU个数进行判断
+    // 如果CPU数大于1，则取旧数组长度右移3位的值
+    // 否则，直接取旧数组当前长度大小
+    // 最后再与“最小迁移数量”做对比，如果小于它，则取“最小迁移数量”
+    if ((stride = (NCPU > 1) ? (n >>> 3) / NCPU : n) < MIN_TRANSFER_STRIDE)
+        stride = MIN_TRANSFER_STRIDE;
+
+    if (nextTab == null) {
+        // 触发扩容的第一个线程，对nextTable进行初始化
+        try {
+            // 老做法，新底层数组的长度为之前的两倍
+            Node<K, V>[] nt = (Node<K, V>[])new Node<?, ?>[n << 1];
+            nextTab = nt;
+        } catch (Throwable ex) {
+            sizeCtl = Integer.MAX_VALUE;
+            return;
+        }
+        // 设置map的nextTable，其实在addCount中的并发线程才会进入辅助扩容的逻辑
+        nextTable = nextTab;
+        // 初始化指针的位置在旧数组的最后一个元素位置
+        transferIndex = n;
+    }
+
+    // 新的哈希表的长度
+    int nextn = nextTab.length;
+    // 占位节点，并且哈希值为-1，当其他线程在put操作到相对应桶时，发现为该类型节点，会进入辅助扩容的逻辑
+    ForWardingNode<K, V> fwd = new ForWardingNode<K, V>(nextTab);
+    boolean advance = true;
+    boolean finishing = false;
+
+    // 3.5.2 transfer哈希桶范围确定
+}
+```
+
+### **3.5.2 transfer哈希桶的范围**
+
+计算出迁移数据的初始桶下标，和终止桶下标
+
+bound：初始桶下标
+i：终止桶下标
+
+```java
+private final void transfer(Node<K, V>[] tab, Node<K, V>[] newTab) {
+    // 初始化新的哈希表
+
+    boolean advance = true;
+    boolean finishing = false;
+    for (int i = 0, bound = 0;;) {
+        Node<K, V> f; int fh;
+        while (advance) {
+            int nextIndex, nextBound;
+            // 扩容已经完成，或者任务
+            if (--i >= bound || finishing)
+                // CAS成功，已经得到了应搬运的桶的索引
+                advance = false;
+            else if ((nextIndex = transferIndex) <= 0) {
+                // 已经被搬完了，不用再搬
+                i = -1;
+                advance = false;
+            }
+            // CAS设置transferIndex变量，根据应搬运的stride个数，移动游标
+            else if (U.compareAndSwapInt(this, TRANSFERINDEX, nextIndex, nextBound = (nextIndex > stride ? nextIndex - stride : 0))) {
+                bound = nextBound;
+                i = nextIndex - 1;
+                advance = false;
+            }
+        }
+
+        // 3.5.3 拷贝数据到新数组/终止扩容
+    }
+}
+```
+
+### **3.5.3 拷贝数据到新数组/终止扩容**
+
+### **3.5.4 addCount的后半部分**
+
+```java
+static final int resizeStamp(int n) {
+    return Integer.numberOfLeadingZeros(n) | (1 <<< (RESIZE_STAMP_BITS - 1));
+    // 假设n为16：
+    // Integer.numberOfLeadingZeros(16) = 27
+    // 1 <<< (RESIZE_STAMP_BITS - 1) = 2^15
+    // 计算 27 ｜ 2^15 ：
+    // 0000 0000 0000 0000 0000 0000 0001 1011
+    // 0000 0000 0000 0000 1000 0000 0000 0000
+    // 结果为：
+    // 0000 0000 0000 0000 1000 0000 0001 1011
+    // 十进制结果：32795
+}
+```
+
 transfer的前置方法是addCount，在上一节中我们介绍了addCount的基本操作，即计数
 
 addCount还有下半部分逻辑，主要是用于检测是否需要扩容，并配合map的sizeCtl和transferIndex，来决定发起还是参与扩容
 
 当sc为正数时，代表Map扩容的阈值；而当sc < -1时，代表Map正在扩容：
 
-    (1111 1111 1111 1111) (0000 0000 0000 0010)
+    (1000 0000 0001 1011) (0000 0000 0000 0010)
 
     高16位的数值rs代表本次扩容的标识戳，低16位的数值n代表共有n - 1个线程参与扩容
 
@@ -667,11 +770,41 @@ addCount还有下半部分逻辑，主要是用于检测是否需要扩容，并
 
     sizeCtl = (rs <<< RESIZE_STAMP_SHIFT) + 2
 
-2. 第一个线程如果结束扩容，会将sc设置为rs + 1
+2. 第一个线程如果结束扩容，会将sizeCtl设置为(n <<< 1) - (n >>> 1)
+
+    sizeCtl = (n << 1) - (n >>> 1);
+
+    假设n为16
+    0000 0000 0000 0000 0000 0000 0001 0000
+
+    n << 1
+    0000 0000 0000 0000 0000 0000 0010 0000
+
+    n >>> 1
+    0000 0000 0000 0000 0000 0000 0000 1000
+
+    sizeCtl最后结果：
+    0000 0000 0000 0000 0000 0000 0001 1000
+
+以上面的resizeStamp(16)为例：
+
+    先计算rs标志戳：
+
+    0000 0000 0000 0000 1000 0000 0001 1011
+
+    发起扩容时，线程将sizeCtl设置为：
+
+    1000 0000 0001 1011 0000 0000 0000 0010
+
+    扩容结束时，线程将sizeCtl设置为：
+
+    0000 0000 0000 0000 0000 0000 0001 1000
+    
 
 ```java
 private final void addCount(long x, int check) {
-    // ...
+    // 计数的部分，详情见上一节...
+
     // 检查是否需要扩容
     if (check >= 0) {
         Node<K, V>[] tab, nt; int n, sc;
@@ -681,15 +814,19 @@ private final void addCount(long x, int check) {
             // sc < 0 => sc < -1，高16位表示扩容的标识戳，低16位表示有多少个线程正在参与扩容
             // 当前table数组正在扩容，会参与帮助扩容
             if (sc < 0) {
-                // sc >>> RESIZE_STAMP_SHIFT，即sc的高16位，是扩容的标识戳。如果sc的高16位不等于rs，说明sizeCtl被其他线程修改了，当前的过程应该失效
-                // sc == rs + 1，表示扩容结束，不再有线程进行扩容
+                // 标志戳不同，说明不是同一个扩容过程，或扩容已经完成
+                // sc == rs + 1（bug，可能会导致某些线程在尝试辅助扩容时，无法立即正确感知扩容结束，进入扩容逻辑，在JDK12已经修复）
+
+                // (nt = nextTable) == null，很重要的判断，防止并发扩容情况的线程不安全情况，其他线程会在这里等待第一个触发扩容的线程初始化数组，当第一个线程将数组初始化后，其他线程才会进入到辅助扩容的逻辑
                 if ((sc >>> RESIZE_STAMP_SHIFT) != rs || sc == rs + 1 || sc == rs + MAX_RESIZERS || (nt = nextTable) == null || transferIndex <= 0)
                     break;
+                if (U.compareAndSwapInt(this, SIZECTL, sc, sc + 1))
+                    transfer(tab, nt);
             }
             // 没有在扩容的话，则发起扩容
-            else if ()
-
-
+            else if () {
+                
+            }
         }
     }
 }
@@ -697,6 +834,7 @@ private final void addCount(long x, int check) {
 
 # JDK-BUG
 - [ConcurrentHashMap不同构造器使用不同负载因子](https://bugs.openjdk.java.net/browse/JDK-8202422)
+- [扩容addCount对于扩容结束判断的bug](https://stackoverflow.com/questions/53493706/how-the-conditions-sc-rs-1-sc-rs-max-resizers-can-be-achieved-in)
 
 # 参考
 - [无锁HASHMAP的原理与实现](https://coolshell.cn/articles/9703.html)
@@ -709,3 +847,5 @@ private final void addCount(long x, int check) {
 - [ConcurrentHashMap，Hash算法优化、位运算揭秘](https://www.cnblogs.com/grey-wolf/p/13069173.html)
 - [ConcurrentHashMap的Unsafe操作](https://blog.csdn.net/js_tengzi/article/details/91358268)
 - [ConcurrentHashMap(一)：常量，成员变量，静态代码块，内部类，spread函数，tabAt函数等详解](https://blog.csdn.net/lxsxkf/article/details/109161450)
+
+- [ConcurrentHashMap transfer分析](https://blog.csdn.net/qfanmingyiq/article/details/108938810)
