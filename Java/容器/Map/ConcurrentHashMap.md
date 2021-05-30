@@ -655,6 +655,8 @@ private final void addCount(long x, int check) {
 
 transfer由addCount驱动，先了解一下transfer方法对sizeCtl值的运用，有助于我们分析addCount后半段部分
 
+    transfer与putVal并没有完全地互斥，互斥只是相对应的桶结点操作，这也体现了与1.7相同的概念--分段锁，只是分段的粒度更小
+
 ### **3.5.1 初始化新的哈希表**
 
 引入了辅助扩容的概念，通过transferIndex变量作为指针，每个线程在计算获得相对应的桶任务之后，都会CAS修改指针的位置，直到transerIndex = 0位置为止
@@ -702,13 +704,16 @@ private final void transfer(Node<K, V>[] tab, Node<K, V> newTab) {
 
 计算出迁移数据的初始桶下标，和终止桶下标
 
-bound：初始桶下标
-i：终止桶下标
+i：起始桶下标
+bound：终止桶下标
+
+i是扩容流程的游标，i >= bound，并通过以下逻辑的`--i`进行移动
 
 ```java
 private final void transfer(Node<K, V>[] tab, Node<K, V>[] newTab) {
-    // 初始化新的哈希表
+    // 初始化新的哈希表，见上3.5.1
 
+    // 计算本线程应搬运的哈希桶范围
     boolean advance = true;
     boolean finishing = false;
     for (int i = 0, bound = 0;;) {
@@ -738,6 +743,99 @@ private final void transfer(Node<K, V>[] tab, Node<K, V>[] newTab) {
 ```
 
 ### **3.5.3 拷贝数据到新数组/终止扩容**
+
+advance在3.5.2中更多体现的是对哈希桶范围的确定，而在本章节中更多体现的是**是否游标可以移动**
+
+```java
+private final void transfer(Node<K, V>[] tab, Node<K, V>[] newTab) {
+    // 初始化新的哈希表，见3.5.1
+
+    // 计算本线程应搬运的哈希桶范围，见3.5.2
+
+    // 判断是否终止扩容
+    if (i < 0 || i >= n || i + n >= nextn) {
+        int sc;
+        if (finishing) {
+            nextTable = null;
+            table = nextTab;
+            sizeCtl = (n << 1) - (n >>> 1);
+            return;
+        }
+        // 设置sizeCtl，参与扩容的线程数减1
+        if (U.compareAndSwapInt(this, SIZECTL, sc = sizeCtl, sc - 1)) {
+            // 这里的sc，是CAS设置前的sizeCtl
+            if ((sc - 2) != resizeStamp(n) << RESIZE_STAMP_SHIFT)
+                // 初始化扩容时，高16位是标志戳，低16位是2；即进入这里，意味着当前线程为扩容过程中的最后一个线程
+                return;
+            finishing = advance = true;
+            i = n;
+        }
+    }
+    else if ((f = tabAt(tab, i)) == null)
+        // 可能会与其他并发put线程进行竞争，失败的话，将重新迁移该桶的数据；成功的话，该桶设置为fwd就算迁移成功（因为该桶没数据），其他线程也不会put了
+        advance = casTabAt(tab, i, null, fwd);
+    else if ((fh = f.hash) == MOVED)
+        // 当前结点数据已被迁移，进行重新计算
+        advance = true;
+    else {
+        // 如果有桶结点，则与并发的putVal线程进行互斥操作
+        synchronized (f) {
+            // 重新检查一下，防止在加锁的过程中，f发生了变化
+            if (tabAt(tab, i) == f) {
+                // 不是头插/尾插，根据记录变动位置的第一个结点，实现快速迁移
+                Node<K, V> ln, hn;
+                // < 0就不对劲了
+                if (fh >= 0) {
+                    // 哈希与长度做“与”操作，可以获得
+                    int runBit = fh & n;
+                    Node<K, V> lastRun = f;
+                    for (Node<K, V> p = f.next; p != null; p = p.next) {
+                        int b = p.hash & n;
+                        if (b != runBit) {
+                            runBit = b;
+                            lastRun = p;
+                        }
+                    }
+                    if (runBit == 0) {
+                                ln = lastRun;
+                                hn = null;
+                            }
+                            else {
+                                hn = lastRun;
+                                ln = null;
+                            }
+                            for (Node<K,V> p = f; p != lastRun; p = p.next) {
+                                int ph = p.hash; K pk = p.key; V pv = p.val;
+                                if ((ph & n) == 0)
+                                    ln = new Node<K,V>(ph, pk, pv, ln);
+                                else
+                                    hn = new Node<K,V>(ph, pk, pv, hn);
+                            }
+                            setTabAt(nextTab, i, ln);
+                            setTabAt(nextTab, i + n, hn);
+                            setTabAt(tab, i, fwd);
+                            advance = true;
+                }
+                else (f instanceof TreeNode) {
+
+                }
+            }
+        }
+    }
+}
+```
+
+举个例子，假设当前有一个底层数组长度为4的哈希表扩容，它将扩容成长度为8的哈希表
+
+    []代表数组，{}代表数组元素，(原先的序号，hash & n的结果)代表数组链表的Node结点
+
+下面是旧数组的详情，第二个桶有由5个结点组成的链表，5个结点将根据hash & 4的结果，分配到新数组的**旧位置或旧位置+4**
+
+[{}, {(1, == 0) -> (2, == 0) -> (3, != 0) -> (4, == 0) -> (5, == 0)}, {}, {}]
+
+根据算法，可以得到lastRun为四号结点，runBit = 0，此时算法将链表切分为四号结点之前和之后两部分
+
+然后再从头开始遍历，遍历到头元素时，将之后那部分的链表，直接接到头元素之后，通过尾插形成一个新链表，并遍历到lastRun位置为止，这个过程相当于只需要遍历链表lastRun索引的长度，**提升了效率**
 
 ### **3.5.4 addCount的后半部分**
 
@@ -824,9 +922,9 @@ private final void addCount(long x, int check) {
                     transfer(tab, nt);
             }
             // 没有在扩容的话，则发起扩容
-            else if () {
-                
-            }
+            else if (U.compareAndSwapInt(this, SIZECTL, sc, (rs << RESIZE_STAMP_SHIFT) + 2))
+                transfer(tab, null);
+            s = sumCount();
         }
     }
 }
