@@ -8,7 +8,116 @@ HashMap属于并发不安全的容器，在并发情况下甚至会导致死循�
 
 ## **1.1 分段锁（JDK8之前）**
 
+ConcurrentHashMap由N个Segement组成（默认并发程度为16），每个Segement通过ReentrantLock维护一组桶结点，多个线程可以同时访问不同分段锁上的桶，从而提升并发程度
 
+```java
+static final class Segment<K, V> extends ReentrantLock implements Seriaizable {
+    static final int MAX_SCAN_RETRIES = Runtime.getRunTime().availableProcessors() > 1 ? 64 : 1;
+
+    transient volatile HashEntry<K, V>[] table;
+
+    transient int count;
+
+    transient int modCount;
+
+    transient int threshold;
+
+    final float loadFactor;
+}
+```
+
+```java
+public class ConcurrentHashMap<K, V> {
+    static final int DEFAULT_CONCURRENCY_LEVEL = 16;
+
+    final Segement<K, V>[] segements;
+}
+```
+
+**所以需要两次hash计算，才能定位到数据应该存储的位置**
+
+put/get/remove等操作，根据以下公式获取到键值对所对应的Segment
+
+    int j = (hash >>> segmentShift) & segmentMask;
+
+而segmentShift和segmentMask的值，在构造函数中进行计算：
+
+    默认并发等级为16，则ssize = 16
+    
+    因为sshift = log2(ssize)，所以sshift = 4
+
+    segmentShift = 32 - sshift => 32 - 4 = 28
+
+    segmentMask = ssize - 1 => 16 - 1 = 15
+
+### **Segement.put**
+
+1. 通过第一次Hash确定Segment的位置，如果该Segment还未初始化，则初始化（懒加载）
+
+2. 进行第二次Hash操作，确定数据在哪个桶
+
+3. 在插入操作开始前，先通过tryLock() + 循环至最大次数的方式，尝试获取锁：若成功，则插入数据，并解锁；若失败，则调用lock()方法挂起阻塞；
+
+```java
+// 继承于ReentrantLock
+final V put(K key, int hash, V value, boolean onlyIfAbsent) {
+    tryLock();
+    // 根据最大重试次数进行重试，如果仍然不行，则采用lock方法，阻塞挂起，避免循环无效空操作浪费cpu
+    
+    lock();
+    try {
+        int index = hash & (tab.length - 1);
+        // 桶头结点
+        HashEntry<K, V> first = tab[index];
+        
+        // 存在则覆盖，不存在则插入到链表头部
+    } finally {
+        unlock();
+    }
+}
+```
+
+### **Segement.get**
+
+也是需要两次Hash，get操作不保证强一致性，为最终一致性
+
+```java
+public V get(Object key) {
+    Segment<K,V> s; 
+    HashEntry<K,V>[] tab;
+    int h = hash(key); //找出对应的segment的位置
+    long u = (((h >>> segmentShift) & segmentMask) << SSHIFT) + SBASE;
+    // 这里通过UNSAFE获取到当前最新的，但是在后续操作中，并不能保证是最新的
+    if ((s = (Segment<K,V>)UNSAFE.getObjectVolatile(segments, u)) != null &&
+        (tab = s.table) != null) {  //使用Unsafe获取对应的Segmen
+        for (HashEntry<K,V> e = (HashEntry<K,V>) UNSAFE.getObjectVolatile
+                 (tab, ((long)(((tab.length - 1) & h)) << TSHIFT) + TBASE);
+             e != null; e = e.next) { //找出对应的HashEntry，从头开始遍历
+            K k;
+            if ((k = e.key) == key || (e.hash == h && key.equals(k)))
+                return e.value;
+        }
+    }
+    return null;
+}
+```
+
+### **Segement.size**
+
+每个Segement都维护了一个count变量来统计该Segment的键值对个数
+
+```java
+// 锁起来了，不需要volatile
+transient int count;
+```
+
+    在执行size操作时，会遍历所有的Segment，然后把count累计起来
+
+1. 在执行size操作时，先尝试不加锁，如果两次计算的结果一致，那么可以认为结果是正确的
+
+2. 如果结果不一致，则重试RETRIES_BEFORE_LOCK的值（3次）
+
+3. 如果3次内都不一致，则对每个Segement都加锁，算完结果后，再全部解锁
 
 ## **1.2 CAS（JDK8）**
 
@@ -868,7 +977,7 @@ addCount还有下半部分逻辑，主要是用于检测是否需要扩容，并
 
     sizeCtl = (rs <<< RESIZE_STAMP_SHIFT) + 2
 
-2. 第一个线程如果结束扩容，会将sizeCtl设置为(n <<< 1) - (n >>> 1)
+2. 线程如果发现自己是最后一个线程，且可以结束扩容，会将sizeCtl设置为(n <<< 1) - (n >>> 1)
 
     sizeCtl = (n << 1) - (n >>> 1);
 
@@ -897,7 +1006,10 @@ addCount还有下半部分逻辑，主要是用于检测是否需要扩容，并
     扩容结束时，线程将sizeCtl设置为：
 
     0000 0000 0000 0000 0000 0000 0001 1000
+
+3. 在第二点情况发生前，最后一个扩容线程会通过CAS将sizeCtl的低16位值 - 1，因为其迁移任务已完成，所以在addCount方法的其他线程当感知到`sc == (rs << RESIZE_STAMP_SHIFE) + 1`时，即可知扩容即将结束，此时将不会进入扩容逻辑
     
+    > [扩容addCount对于扩容结束判断的bug](https://stackoverflow.com/questions/53493706/how-the-conditions-sc-rs-1-sc-rs-max-resizers-can-be-achieved-in)
 
 ```java
 private final void addCount(long x, int check) {
