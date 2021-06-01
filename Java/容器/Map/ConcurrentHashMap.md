@@ -1059,3 +1059,4 @@ private final void addCount(long x, int check) {
 - [ConcurrentHashMap(一)：常量，成员变量，静态代码块，内部类，spread函数，tabAt函数等详解](https://blog.csdn.net/lxsxkf/article/details/109161450)
 
 - [ConcurrentHashMap transfer分析](https://blog.csdn.net/qfanmingyiq/article/details/108938810)
+- [ConcurrentHash7和8区别](https://blog.csdn.net/csdnlijingran/article/details/88946558)
