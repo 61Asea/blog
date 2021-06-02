@@ -292,13 +292,29 @@ static unsigned long _dictNextPower(unsigned long size)
 
 # **3. 与ConcurrentHashMap的对比**
 
-ConcurrentHashMap8是多线程协同扩容，而Redis因其单线程模型，采取渐进式扩容
+扩容效率：ConcurrentHashMap上更胜一筹，多线程总是比单线程更快
 
-在扩容效率上，ConcurrentHashMap上更胜一筹
+读效率：考虑到redis可能没有做哈希扰动，可能会出现底层数组长度较小时分布不均的问题，ConcurrentHashMap更胜一筹
 
-在读效率上，考虑到redis可能没有做哈希扰动，可能会出现底层数组长度较小时分布不均的问题，ConcurrentHashMap更胜一筹
+写效率：不考虑扩容的情况下，基本一致；考虑扩容的情况下，ConcurrentHashMap需要帮助扩容，而redis只需要写到第二个数组即可，Redis更胜一筹
 
-在写效率上，ConcurrentHashMap需要帮助扩容，而redis只需要写到第二个数组即可，Redis更胜一筹
+## **扩容机制的比较**
+
+    ConcurrentHashMap8是多线程协同扩容，而Redis因其单线程模型，采取渐进式扩容
+
+渐进性扩容
+
+- 致命点：维护两个数组，在内存上不占优势
+
+- 亮点：扩容过程中执行写操作、删除操作，较多线程协同效率佳
+
+多线程协同扩容
+
+- 致命点：put操作需要帮助扩容，并一次性扩容完毕后，再会put，可能会有一段时间的不可用
+
+- 亮点：只用维护一个数组，且一次性扩容后，后续的操作都不会再需要分步分别扩容的
+
+根据具体实际场景，来选择
 
 # 参考
 - [Redis Hash数据结构的底层实现](https://www.cnblogs.com/ourroad/p/4891648.html)
