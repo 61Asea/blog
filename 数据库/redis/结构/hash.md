@@ -2,7 +2,9 @@
 
 > [哈希表](https://asea-cch.life/achrives/hash)
 
-> [hashMap](https://asea-cch.life/achrives/hashmap)
+> [HashMap](https://asea-cch.life/achrives/hashmap)
+
+> [ConcurrentHashMap](https://asea-cch.life/achrives/concurrentHashMap)
 
     具体的哈希表数据结构，以及JDK中的HashMap实现内容，可以查看上文
 
@@ -31,7 +33,7 @@ Redis的哈希与JDK7的HashMap大部分有异曲同工之妙，但是Redis有�
 
 对底层存储结构是压缩列表的Hash**执行新增、删除操作**时，会造成数组元素的移动。当存储量级较大时，元素的移动成本将无法忽视
 
-但是如果存储量级较小时，使用ziplist无疑可以发挥更好的内存利用率，这符合Redis的第一个需求
+但是如果**存储量级较小**时，使用ziplist无疑可以发挥更好的内存利用率，这符合Redis的第一个需求
 
 ## **1.2 dict/dictht/dictEntry**
 
@@ -226,7 +228,7 @@ int dictExpand(dict *d, unsigned long size)
 }
 ```
 
-## **2.1 扩容后的长度**
+### **2.2.1 扩容后的长度**
 
 网上有人说redis的扩容后的长度与hashMap机制一致，也有人说是两倍于当前已有元素个数的最小2n次方幂长度
 
@@ -270,7 +272,7 @@ static unsigned long _dictNextPower(unsigned long size)
 
     如果旧数组的长度不是2的n次方，需要特殊处理，以保证哈希函数的分布性能
 
-## **2.2 渐进式扩容时，进行访问操作**
+### **2.2.2 渐进式扩容时，进行访问操作**
 
     分而治之的方法：_dictRehashStep，执行一次表示进行一次单步的rehash
 
