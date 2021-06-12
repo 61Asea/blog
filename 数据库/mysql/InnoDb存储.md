@@ -113,3 +113,4 @@ User Records + free space：由多个行组成，非叶子结点存储主键值�
 - [MySql数据是如何存储在磁盘上存储的](https://mp.weixin.qq.com/s?__biz=MzI3NzE0NjcwMg==&mid=2650152173&idx=1&sn=649e69f288d3d529d3af5282584b97dc&chksm=f36801ccc41f88dae42bf2914ae341aca27ee1284d06b50e8801e261bcb20e0c8cc380194edc&scene=21#wechat_redirect)
 - [MySQL中InnoDB页结构和索引的存储](https://blog.csdn.net/qq_45434246/article/details/103370558)
 - [InnoDB-索引页（数据页）](https://www.jianshu.com/p/e13e70b90a45/)
+- [页分裂和页合并](https://zhuanlan.zhihu.com/p/98818611)
