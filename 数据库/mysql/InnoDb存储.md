@@ -1,4 +1,4 @@
-# Mysql：InnoDb存储
+# Mysql（一）：innodb存储
 
 ![文件目录](https://asea-cch.life/upload/2021/06/%E6%96%87%E4%BB%B6%E7%9B%AE%E5%BD%95-6b07a2a908f74508b8f6050cfec0629d.png)
 

@@ -1,7 +1,8 @@
-# Mysql（三）：运作机制
+# Mysql（四）：运作机制
 
 > [Mysql（一）：innodb存储](https://asea-cch.life/achrives/innodb存储)
 > [Mysql（二）：索引](https://asea-cch.life/achrives/索引)
+> [Mysql（三）：锁机制](https://asea-cch.life/achrives/锁机制)
 
 上两篇文章主要介绍了innodb的外存存储和索引机制，我们深刻地感受到I/O操作对于系统的性能至关重要，Mysql使用B+树组织数据，并贯彻系统局部性原理，最小操作单位为一个页，以尽可能地减少对库操作时I/O的次数
 

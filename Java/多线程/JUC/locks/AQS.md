@@ -1303,3 +1303,5 @@ private void doReleaseShared() {
 - [线程中断 interrupt 和 LockSupport](https://blog.csdn.net/qq_26542493/article/details/104602385)
 - [并发系列(十)-----AQS详解等待队列](https://blog.csdn.net/MyPersonalSong/article/details/84386935)
 - [同步器AQS中的同步队列与等待队列](https://blog.csdn.net/gs_albb/article/details/88904205)
+
+- [LockSupport.park()会释放锁资源吗？](https://www.cnblogs.com/tong-yuan/p/11768904.html)
