@@ -105,6 +105,16 @@ User Records + free space：由多个行组成，非叶子结点存储主键值�
 
 当读取数据时，会先读取NULL值列表来判断可以为NULL的列是否为NULL值，若是的话，则直接跳过该列，**带来的好处就是真实数据存放得更紧凑**
 
+### **完全行溢出方式**
+
+off-page：溢出页
+
+Dynamic和Compact的区别：
+- Compact会将Varchar、Text或Blob类型的值存放于BTree节点，超过768字节的部分再放到off-page
+- Dynamic只在TEXT或BLOB列 <= 40字节时将数据存在于数据页中，否则列数据放到off-page中，这样可以避免Compact把太多的大列值放到BTree节点
+
+    Dynamic数据页中只存放20个字节的指针，实际的数据存放在off-page中，Compact会存放768个前缀字节
+
 # 参考
 - [从MySQL InnoDB物理文件格式深入理解索引](https://zhuanlan.zhihu.com/p/103582178)
 - [mysql page directory_InnoDB Page结构详解](https://blog.csdn.net/weixin_39639965/article/details/113433163)
@@ -114,3 +124,4 @@ User Records + free space：由多个行组成，非叶子结点存储主键值�
 - [MySQL中InnoDB页结构和索引的存储](https://blog.csdn.net/qq_45434246/article/details/103370558)
 - [InnoDB-索引页（数据页）](https://www.jianshu.com/p/e13e70b90a45/)
 - [页分裂和页合并](https://zhuanlan.zhihu.com/p/98818611)
+- [MySQL InnoDB 行记录格式（ROW_FORMAT）](https://www.cnblogs.com/wilburxu/p/9435818.html)
