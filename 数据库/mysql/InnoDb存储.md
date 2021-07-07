@@ -71,6 +71,85 @@ User Records + free space：由多个行组成，非叶子结点存储主键值�
 
     主键和非主键都是索引，一切数据都存储在INDEX索引页中，索引即数据，数据即索引
 
+
+### **页默认大小为16K意味着什么？**
+
+> [MySQL数据行溢出的深入理解](https://www.cnblogs.com/DataArt/p/10223567.html)
+
+#### **I/O的大小**
+
+磁盘的读写基本单位为**扇区**，操作系统操作磁盘的基本单位为**磁盘块**
+
+```linux
+# 查询挂载硬盘的磁盘块大小
+xfs_info /dev/sda1 | grep bsize
+
+结果：
+data     =                       bsize=4096   blocks=262144, imaxpct=25
+naming   =version 2              bsize=4096   ascii-ci=0 ftype=0
+log      =internal               bsize=4096   blocks=2560, version=2
+
+# 查询扇区的大小
+fdisk -l | grep Units
+
+结果：
+Units = 扇区 of 1 * 512 = 512 bytes
+```
+
+所以默认页大小的innodb每次I/O会读取4个磁盘块的数据，那么假设页越大，每次I/O的数据量就越大
+
+#### **行存储最大容量为默认页大小的一半**
+
+页大小的不同，会影响不同行数据记录的存储大小：
+
+> 数据页的存储为B+树结构，非叶子节点存储索引组织，叶子节点存储真实数据，每个叶子节点之间都有相互引用，即是双向链表。最不理想的情况下，每个叶子节点只存储一行，这样就发挥不了B+树的优势，退化成了二叉树/双向链表
+
+为了避免数据结构退化为效率最差的情况，innodb限定了每个页最少应存储2个行记录，所以行最大容量只能为**页默认大小的一半**，即**8192个字节**
+
+    上文《MySQL数据行溢出的深入理解》就介绍了BLOB字段在行格式为Compact时的坑，因为不像DYMATIC采取完全行溢出的方式，Compact会保存前864个字节在行数据中
+
+    当真实行数据在BLOB字段上的大小都超过了864字节，且BLOB字段超过（8192 / 864）个时，就会出现插入报错
+
+异常信息：
+
+    Row size too large. The maximum row size for the used table type, not counting BLOBS, is 65535. This includes storage overhead, check the manual. You have to change some columns to TEXT or BLOBS.
+
+#### **不同页大小，对于不同读写场景的效率也不同**
+
+```linux
+# 查看机器负载状态
+vmstat
+
+关于CPU的负载结果如下：
+------cpu-----
+us sy id wa st
+3  2  95  0  0
+```
+
+> [MySQL 如何优化cpu消耗](https://www.cnblogs.com/YangJiaXin/p/10933458.html)
+
+从图中可知**cpu = us(用户) + sy(系统) + id(真正空闲) + wa(I/O等待) + ni&si(软硬中断)**，其中软硬中断和系统较难改变，而Mysql可以关注于**us和wa**
+
+以文章中的测试场景：1亿条数据，文件总大小30G，即每条数据为0.3KB，16KB页可以存放约53条记录，8KB页可以存放约26条记录
+
+- 读写共存场景（50%读，50%写）
+
+    16KB，对CPU压力较小，平均在20%
+
+    - 写：行数据如果本身较大，更大的页面有利于提升速度，因为一个页面可以放下更多的行，这样就可以用更少的IOPS写更多的数据，即每个I/O写的大小更大
+        
+    - 读：I/O读的效率会下降，因为大I/O只能读取到小部分数据
+
+    8KB，CPU压力为30%~40%，但select吞吐量要高于16K
+
+    - 写：页面放下的行数相比16KB更少，需要更多的IOPS写入数据，即每个I/O写的大小更小
+        
+    - 读：I/O读的效率会上升，因为小I/O就能读取到需要的数据部分
+    
+- 读场景（100%读）
+
+    16KB和8KB基本没差异，但是根据对读写场景的分析，理论上16KB的读性能会逊于8KB
+
 ## **3 行结构**
 
 我们知道B+树的结构中，叶子结点有非叶子结点的冗余数据，每个叶子结点之间通过双向引用形成一个双向链表
