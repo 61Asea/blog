@@ -1,4 +1,4 @@
-# Redis结构：Hash/dict
+# Redis结构：dict(hashtable)
 
 > [哈希表](https://asea-cch.life/achrives/hash)
 
@@ -33,7 +33,7 @@ Redis的哈希与JDK7的HashMap大部分有异曲同工之妙，但是Redis有�
 
 对底层存储结构是压缩列表的Hash**执行新增、删除操作**时，会造成数组元素的移动。当存储量级较大时，元素的移动成本将无法忽视
 
-但是如果**存储量级较小**时，使用ziplist无疑可以发挥更好的内存利用率，这符合Redis的第一个需求
+但是如果**存储量级较小**时，使用ziplist无疑可以**发挥更好的内存利用率**，这符合Redis的第一个需求
 
 ## **1.2 dict/dictht/dictEntry**
 
@@ -43,7 +43,9 @@ Redis的哈希与JDK7的HashMap大部分有异曲同工之妙，但是Redis有�
 
 ### **dict**
 
-最外层结构体，类比于JDK的HashMap
+字典，又称为映射(map)，用于保存键值对(key-value pair)的抽象数据结构，只是在redis中指定使用哈希表来实现
+
+类比于JDK的Map与HashMap的关系，这也从侧面表达：**哈希表是实现映射的其中一种方式**
 
 ```c++
 typedef struct dict {
@@ -59,7 +61,7 @@ typedef struct dict {
 
 ### **dictht**
 
-存储的底层结构，类比于HashMap的Node数组
+存储的底层结构，类比于HashMap的Node数组，并提供`used`字段记录已使用的桶个数
 
 ```c++
 typedef struct dictht {
@@ -74,7 +76,7 @@ typedef struct dictht {
 } dictht;
 ```
 
-    注意sizeMask的值为size - 1，证明redis与HashMap的哈希函数相同
+> 注意：sizeMask的值为size - 1，证明redis与HashMap的哈希函数相同
 
 ### **dictEntry**
 
@@ -82,14 +84,18 @@ typedef struct dictht {
 
 ```c++
 typedef struct dictEntry {
+    // 键
     void *key;
+    
+    // 值
     union {
         void *val;
         uint64_t u64;
         int64_t s64;
         double d;
     } v;
-    // 指向下一个桶节点
+    
+    // 桶之下的链表结构（拉链法）
     struct dictEntry *next;
 } dictEntry;
 ```
@@ -102,15 +108,15 @@ typedef struct dictEntry {
 
 ## **2.1 get**
 
-哈希值计算：
+redis哈希值计算：
 
 ```c++
 #define dictHashKey(d, key) (d) ->type->hashFunction(key)
 ```
 
-JDK的HashMap对hashCode进行了扰动，防止低位特征不明显而造成分布不均
+> JDK的HashMap对hashCode进行了扰动，防止低位特征不明显而造成分布不均
 
-哈希函数：
+redis哈希函数：
 
     h & d->ht[table].sizemask，其中sizeMask与HashMap一致，都是数组长度 - 1
 
@@ -126,7 +132,7 @@ dictEntry *dictFind(dict *d, const void *key)
     h = dictHashKey(d, key);
     // 查找ht[0]和ht[1]共两个表
     for (table = 0; table <= 1; table++) {
-        // 通过哈希函数获得数组的下标
+        // 通过哈希函数获得数组的下标，sizemask必定等于size - 1
         idx = h & d->ht[table].sizemask;
         he = d->ht[table].table[idx];
         while(he) {
@@ -185,15 +191,15 @@ dictEntry *dictAddRaw(dict *d, void *key, dictEntry **existing)
 
 与HashMap不同，redis会先扩容，再执行put操作，因为redis是渐进式扩容，它需要在put操作前先感知当前已经开始扩容了
 
-## **2.3 扩容机制**
+## **2.3 扩容/缩容机制（与HashMap有什么不同？）**
 
-redis采用渐进式扩容，这是redis对于第二个需求（单线程）的考量，这种扩容机制是一种分而治之的方式，将rehash的操作分摊在每一次增删查改操作中，避免一次性的集中式rehash
+redis采用`渐进式扩容`，这是redis对于第二个需求（单线程）的考量，这种扩容机制是一种分而治之的方式，将rehash的操作分摊在每一次增删查改操作中，避免一次性的集中式rehash
 
     一次性集中式rehash，意味着有庞大的计算量，对于单线程的redis而言，可能会处于很长的一段时间不可用，这是不允许的
 
-**所以dict结构维护有两个数组，第一个数组为存放数据的table，作为非扩容时的容器；第二个数只有在扩容时才会被启用，并在该期间直到扩容结束，作为主存放数据的容器**
+**所以dict结构维护有两个数组，第一个数组为存放数据的table，作为非扩/缩容时的容器；第二个数组只有在扩/缩容时才会被启用，并在该期间直到扩/缩容结束，作为主存放数据的容器**
 
-当扩容结束时，会将ht[1]覆盖到ht[0]，并将rehashIndex置为-1，表示扩容结束；反之会将rehashIndex设置为0，表示扩容正在开始
+当扩/缩容结束时，会将ht[1]覆盖到ht[0]，并将rehashIndex置为-1，表示扩/缩容结束；反之会将rehashIndex设置为0，表示扩/缩容正在开始
 
 ```c++
 int dictExpand(dict *d, unsigned long size)
@@ -228,11 +234,31 @@ int dictExpand(dict *d, unsigned long size)
 }
 ```
 
-### **2.2.1 扩容后的长度**
+rehash流程如下：
 
-网上有人说redis的扩容后的长度与hashMap机制一致，也有人说是两倍于当前已有元素个数的最小2n次方幂长度
+1. 为新数组ht[1]分配空间，大小取决于扩/缩容操作，以及ht[0]当前包含的键值对数量
+2. 将ht[0]中的键值对移动到ht[1]中，但不是立即执行，而是在对dict的每次操作都会触发**单步的rehash**，只迁移相关的桶
+3. 当迁移完毕后，将ht[1]设置为ht[0]，并在ht[1]新创建一个空白哈希表，为下一次rehash做准备
 
-在add操作引发的是否rehash判断中，我们可以看到传入的参数为：**第一个数组长度的两倍**
+### **2.2.1 rehash的触发条件**
+
+> 负载因子公式 ：load_factor = ht[0].used / ht[0].size
+
+扩容：
+
+- 服务器目前没有在执行`BGSAVE`命令或者`BGREWRITEAOF`命令，并且哈希表的**负载因子大于等于1**（HashMap是0.75）
+- 服务器正在执行`BGSAVE`命令或者`BGREWRITEAOF`命令，且**负载因子大于等于5**
+
+缩容：
+
+当哈希表的负载因子**小于0.1**时，程序自动开始对哈希表进行收缩操作
+
+### **2.2.2 扩/缩容后的长度**
+
+<!-- 网上有人说redis的扩容后的长度与hashMap机制一致，也有人说是两倍于当前已有元素个数的最小2n次方幂长度
+
+在add操作引发的是否rehash判断中，我们可以看到传入的参数为：**第一个数组长度的两倍** -->
+
 ```c++
 static int _dictExpandIfNeeded(dict *d)
 {
@@ -249,7 +275,9 @@ static int _dictExpandIfNeeded(dict *d)
 }
 ```
 
-但是在dictExpand方法中，又调用了静态方法_dictNextPower进行计算，
+在dictExpand方法中，调用了静态方法_dictNextPower将计算出的长度调整为2的整数倍大小
+
+> 为什么长度要为2的整数倍：哈希函数使用”与“操作，长度如果为2的整数倍，-1可以获得比特位全1的掩码，这样做”与“操作时才能**保证计算结果均匀分布**
 
 ```c++
 static unsigned long _dictNextPower(unsigned long size)
@@ -266,13 +294,19 @@ static unsigned long _dictNextPower(unsigned long size)
 }
 ```
 
-关于底层数组长度的最佳实践为2的n次方，redis初始化容量为4，可以得出以下结论：
+关于底层数组长度的最佳实践为2的n次方，redis初始化容量为4
 
-    一般情况下，旧数组的长度就是2的n次方，扩容后的长度就是扩容后的2倍
+结论：使用`ht[0].used`作为扩、缩容的长度依据
 
-    如果旧数组的长度不是2的n次方，需要特殊处理，以保证哈希函数的分布性能
+- 扩容长度
 
-### **2.2.2 渐进式扩容时，进行访问操作**
+    ht[1]的大小为（ht[0].used * 2）的最小2^n
+
+- 缩容长度
+
+    ht[1]的大小ht[0].used的最小2^n
+
+### **2.2.3 渐进式扩容时，进行访问操作**
 
     分而治之的方法：_dictRehashStep，执行一次表示进行一次单步的rehash
 
