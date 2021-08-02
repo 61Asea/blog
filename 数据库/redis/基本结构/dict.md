@@ -1,19 +1,22 @@
 # Redis结构：dict(hashtable)
 
+字典/映射：Redis本身作为键值数据库，底层就是用字典实现的，而Redis的哈希键类型也是通过字典进行实现
+
+> 字典/映射是一种抽象数据结构，而哈希表是实现字典的一种方式，是一种具体的数据结构。类似地，还有通过红黑树、链表或跳表实现映射
+
+具体到redis的哈希键，底层通过`hashtable`实现，这与JDK7的HashMap大部分有异曲同工之妙，但是Redis有其自身的着重点：
+1. Redis是内存型数据库，需要考虑内存的开销
+2. Redis在4.0版本之前，是单线程运行的；在4.0版本之后，逐步开始支持多线程，如异步新增、删除
+
 > [哈希表](https://asea-cch.life/achrives/hash)
 
 > [HashMap](https://asea-cch.life/achrives/hashmap)
 
 > [ConcurrentHashMap](https://asea-cch.life/achrives/concurrentHashMap)
 
-    具体的哈希表数据结构，以及JDK中的HashMap实现内容，可以查看上文
+> 具体的哈希表数据结构，以及JDK中的HashMap实现内容，可以查看上文
 
-Redis的哈希与JDK7的HashMap大部分有异曲同工之妙，但是Redis有其自身的着重点：
-
-1. Redis是内存型数据库，需要考虑内存的开销
-2. Redis在4.0版本之前，是单线程运行的；在4.0版本之后，逐步开始支持多线程，如异步新增、删除
-
-通过Redis以上两点考究点，我们来分析Redis的hash与其他hash结构实现的不同
+通过Redis以上两点考究点，我们会重点分析Redis的hash与其他hash结构实现的不同
 
 # **1. 基础结构**
 
@@ -249,6 +252,14 @@ rehash流程如下：
 - 服务器目前没有在执行`BGSAVE`命令或者`BGREWRITEAOF`命令，并且哈希表的**负载因子大于等于1**（HashMap是0.75）
 - 服务器正在执行`BGSAVE`命令或者`BGREWRITEAOF`命令，且**负载因子大于等于5**
 
+`BGSAVE`: 用于在后台异步保存当前数据库的内存数据到磁盘
+
+`BGREWRITEAOF`：异步执行一个AOF文件重写操作
+
+这两个指令执行过程中，需要创建当前服务器进程的子进程(fork)，大多数操作系统采用写时复制（COW）技术来优化子进程的使用效率。所以在子进程存在期间，提高执行扩展操作的因子，避免在子进程存在期间进行扩容操作，可以避免不必要的内存写入操作，最大限度地节约内存
+
+    子进程是fork出来的，已经很消耗内存。与此同时触发扩容，则dict分配获得更大的内存，在同一时间可能会导致内存消耗过高
+
 缩容：
 
 当哈希表的负载因子**小于0.1**时，程序自动开始对哈希表进行收缩操作
@@ -308,33 +319,52 @@ static unsigned long _dictNextPower(unsigned long size)
 
 ### **2.2.3 渐进式扩容时，进行访问操作**
 
-    分而治之的方法：_dictRehashStep，执行一次表示进行一次单步的rehash
+> 分而治之的方法：_dictRehashStep，执行一次表示进行一次单步的rehash，避免集中式rehash会带来庞大的计算量
 
-- 在写操作时
+步骤：
 
-    如果正在扩容，则执行一次_dictRehashStep，并将新增的键值对加入到ht[1]中；否则，不执行_dictRehashStep，加入到ht[0]中
+1. 为ht[1]分配好空间，dict结构同时持有ht[0]和ht[1]两个哈希表
+2. 在字典中维护一个索引计数器`rehashidx`，将其值置为0，代表rehash开始
+3. 在rehash进行期间，每次对字典执行添加、删除、查找或者更新操作时，除了执行操作，还会将`rehashidx`索引上的所有键值对rehash到ht[1]中，当单次迁移工作完毕时，rehashidx的属性自增1
 
-- 在读操作时
+    - 在写操作时
 
-    如果正在扩容，则执行一次_dictRehashStep。接着再分别去ht[0]和ht[1]中查找元素；否则，直接去ht[0]查找
+        如果正在扩容，则执行一次_dictRehashStep，并将新增的键值对加入到ht[1]中；否则，不执行_dictRehashStep，加入到ht[0]中
 
-- 在删除操作时
+    - 在读操作时
 
-    如果正在扩容，则执行一次_dictRehashStep。接着再去ht[0]和ht[1]中查找元素，进行删除；否则，直接去ht[0]查找元素并删除
+        如果正在扩容，则执行一次_dictRehashStep。接着再分别去ht[0]和ht[1]中查找元素；否则，直接去ht[0]查找
 
-- 在修改操作时
+    - 在删除操作时
 
-    与写操作一致，因为底层也是调用写操作的方法
+        如果正在扩容，则执行一次_dictRehashStep。接着再去ht[0]和ht[1]中查找元素，进行删除；否则，直接去ht[0]查找元素并删除
+
+    - 在修改操作时
+
+        与写操作一致，因为底层也是调用写操作的方法
+
+4. 随着字典操作的不断执行，ht[0]的键值对最终全部迁移到了ht[1]中，此时将`rehashidx`设置为-1，代表rehash的结束
+
 
 # **3. 与ConcurrentHashMap的对比**
 
-扩容效率：ConcurrentHashMap上更胜一筹，多线程总是比单线程更快
+## **哈希扰动**
 
-读效率：考虑到redis可能没有做哈希扰动，可能会出现底层数组长度较小时分布不均的问题，ConcurrentHashMap更胜一筹
+读效率：
 
-写效率：不考虑扩容的情况下，基本一致；考虑扩容的情况下，ConcurrentHashMap需要帮助扩容，而redis只需要写到第二个数组即可，Redis更胜一筹
+考虑到redis可能没有做哈希扰动，可能会出现底层数组长度较小时分布不均的问题；ConcurrentHashMap/HashMap通过hashcode的高16位和低16位异或处理
+
+> 分布不均，加剧哈希冲突情况，导致读取较慢
+
+写效率：
+
+不考虑扩容的情况下，基本一致
+
+考虑扩容的情况下，ConcurrentHashMap需要帮助扩容；而redis只需要写到第二个哈希数组中，并通过后续的操作进行渐进rehash，Redis更胜一筹
 
 ## **扩容机制的比较**
+
+扩容效率：ConcurrentHashMap上更胜一筹，多线程总是比单线程更快
 
     ConcurrentHashMap8是多线程协同扩容，而Redis因其单线程模型，采取渐进式扩容
 
@@ -344,9 +374,9 @@ static unsigned long _dictNextPower(unsigned long size)
 
 - 亮点：扩容过程中执行写操作、删除操作，较多线程协同效率佳
 
-多线程协同扩容
+多线程集中式扩容
 
-- 致命点：put操作需要帮助扩容，并一次性扩容完毕后，再会put，可能会有一段时间的不可用
+- 致命点：put操作需要帮助扩容，并一次性扩容完毕后，才执行原先的put操作（假设扩容后的长度仍然不足以支持put操作，会再次触发扩容机制，这可能会有一段时间的不可用）
 
 - 亮点：只用维护一个数组，且一次性扩容后，后续的操作都不会再需要分步分别扩容的
 
@@ -355,3 +385,4 @@ static unsigned long _dictNextPower(unsigned long size)
 # 参考
 - [Redis Hash数据结构的底层实现](https://www.cnblogs.com/ourroad/p/4891648.html)
 - [HashMap和Redis的hash的对比](https://blog.csdn.net/wangmaohong0717/article/details/84611426)
+- [Redis设计与实现 第二版]()
