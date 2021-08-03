@@ -183,7 +183,9 @@ public E remove(int index) {
 => System.arrayCopy：[1, 3, 4，4]
 => elementData[--size] = null：[1, 3, 4. null]
 
-需要调用System.arrayCopy将index后面的所有元素都往前挪一位，即复制到index的位置上，该操作的时间复杂度为O(N)，开销较大
+需要调用System.arrayCopy将index后面的所有元素都往前挪一位，即复制到index的位置上，**并从尾往前，将移动步数数量的元素置为NULL**，不会自动缩容
+
+该操作的时间复杂度为O(N)，开销较大
 
 ```java
 public boolean remove(Object o) {
