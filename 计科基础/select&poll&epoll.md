@@ -162,6 +162,15 @@ main() {
 
 时间复杂度：O(N)
 
+以整体视角来看select()：
+1. 进程创建socket/file的fd描述符，将它们加入到文件描述符集合中
+2. 调用select()，传入文件描述符集合进行监测，这个过程涉及内存复制
+3. 操作系统将进程加入到每个内核socket/file的**等待队列**中
+4. 假设网卡对某个socket的DMA内存拷贝完成后，会向cpu发出中断信号，并将进程从**全部socket的等待队列**移除
+5. 将进程加入到os的工作队列中，select因为不知道是哪些socket就绪，会遍历一遍文件描述集，修改就绪socket对应文件描述集的比特位
+6. 通过FD_ISSET()，对第一步创建的描述符进行检测，如果描述符的比特位在文件描述集的bit位值为0，说明已就绪，可以执行read()/recv()等系统调用
+7. 由于数据不是一次性发生完毕的，所以read()/recv()系统调用过程不能是阻塞的，这里结合非阻塞I/O
+
 ## **1.3 学习过程中的问题思考**
 
 问题1：select()函数返回就绪文件数量时，有没有通知进程？
@@ -285,24 +294,7 @@ main() {
 
 > [I/O多路复用之epoll](https://blog.csdn.net/fengxinlinux/article/details/75452740)
 
-epoll()是比select()、poll()更先进的一种模型，是Linux特有的I/O复用函数，在实现和使用上与select()与poll()有巨大差异：
-- epoll()使用一组函数来完成任务，而不是单个函数
-
-    ```c++
-    int epoll_create(int size);
-
-    int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
-
-    int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout);
-    ```
-
-- epoll把用户关心的fd上的事件放在**内核的一个事件表中**
-
-    > 从而避免像select()和poll()一样每次调用，都要重复传入fd_set或pollfds
-
-- epoll()**不通过轮询**的方式处理，可以极大地提升性能
-
-    > select/poll：轮询监测传入的fd集，有就绪时返回
+epoll()是比select()、poll()更先进的一种模型，是Linux特有的I/O复用函数，在实现和使用上与select()与poll()有巨大差异
 
 ## **3.1 流程**
 
@@ -310,7 +302,7 @@ epoll()是比select()、poll()更先进的一种模型，是Linux特有的I/O复
 2. 调用epoll_ctl()，修改epoll的兴趣列表
 3. 调用epoll_wait()等待事件，获得事件时即可执行相应操作
 
-### **3.1 调用epoll_create(int size)，创建epoll实例**
+### **3.1.1 调用epoll_create(int size)，创建epoll实例**
 
 ```c++
 #include <sys/epoll.h>
@@ -318,13 +310,28 @@ epoll()是比select()、poll()更先进的一种模型，是Linux特有的I/O复
 int epoll_create(int size);
 ```
 
-`作用`：epoll需要**额外使用一个fd**，来唯一标识内核中的这个事件表。因为epoll()把用户进程关心的fd上的事件，放在**内核的一个事件表**
+`作用`：进程调用后，会在内核创建一个该进程的**eventpoll**对象，这个对象也被称为事件表，后续后将用户进程关心的fd通过该事件表进行维护
 
-`返回值`：该函数返回的fd将用作其他所有epoll系统调用的第一个参数，以指定要访问的内核时间表
+`返回值`：返回`epfd`，其实就是内核的eventpoll对象，它将被用作其他所有epoll系统调用的第一个参数，以指定要访问的内核事件表
 
-> 注意：额外使用一个fd的话，在使用完epoll后必须close关闭掉该fd，否则会导致fd耗尽
+> 注意：因为epfd也占用了fd，在使用完epoll后必须close关闭掉该fd，否则会导致fd耗尽
 
-### **3.2 调用epoll_ctl()，修改epoll的兴趣列表**
+#### **epfd（eventpoll）**
+
+又称为：rbr、eventpoll、内核epoll事件表
+
+`底层实现`：红黑树数据结构实现，提升增删的效率，方便快速新增或删除原有的fd；兼顾查找效率，可以**避免添加相同的结点**
+
+> epfd指向内核的eventpoll结构，通过它可以管理存放后续epoll_ctl添加的事件集合，这些集合以epitem为结点**挂载在红黑树上**
+
+`作用`：
+1. 添加到epoll中的事件，都会与设备驱动**建立回调关系**。当相应的socket事件发生时，内核根据回调事件，将epitem加入到**rdlist就绪列表中**
+
+> socket收到数据后，设备中断程序操作的主体变成了eventpoll，将自身注册到rdlist后，再由eventpoll进行后续的操作
+
+2. 解耦进程阻塞与维护文件描述符的过程，epoll只需要向内核提交一次感兴趣的fd与事件类型即可
+
+### **3.1.2 调用epoll_ctl()，修改epoll的兴趣列表**
 
 ```c++
 #include <sys/epoll.h>
@@ -367,32 +374,106 @@ struct epoll_event {
     ```
     - [探讨epoll原理（红黑树、rdlist的实现）](https://www.cnblogs.com/zhilong233/p/13410719.html)
 
-    底层实现：红黑树数据结构实现
-
-    > 每个epoll对象都有一个独立的eventpoll结构体，通过eventpoll管理存放后续epoll_ctl添加的事件集合，这些集合以epitem为结点**挂载在红黑树上**
-
-    目的：添加到epoll中的事件，都会与设备驱动**建立回调关系**。当相应事件发生时，可以兼顾查找与增删的效率，避免遍历查找
-
-    > 查找到结点后，会调用回调事件，将epitem加入到**rdlist就绪列表中**
-
-`作用`：根据不同的op操作类型，对epfd描述符进行操作
+`作用`：对epfd进行操作，可以向内核的是eventpoll事件表新增或删除兴趣fd
 
 `返回值`：成功时返回0，失败时返回-1并设置errno
 
-<!-- 疑问：红黑树是在哪个数据结构上使用的 -->
+### **3.1.3 调用epoll_wait()等待事件，获得事件时即可执行相应操作**
 
-### **3. 调用epoll_wait()等待事件，获得事件时即可执行相应操作**
+不同于select()，socket在DMA复制唤醒进程时，不是将进程从全部的socket等待队列移除。取而代之的，是通过epfd中的设备回调事件，将自身**注册**到epfd的rdlist中
 
-#### **rdlist就绪事件列表**
+epoll()只需要往rdlist执行出队操作取出就绪socket，而不是像以前遍历筛选，时间复杂度降至O(1)
 
-> [](https://blog.csdn.net/lqy971966/article/details/111170106)
+`底层实现`：双向链表
 
-## **3.2 epoll触发条件**
+## **3.2 epoll模式**
 
+epoll对epoll_fd有两种操作模式：LT（Level Trigger）模式和ET（Edge Trigger）模式
+
+这两种叫法来源于电学术语，可以认为：
+- 高电平：fd上有数据/fd可写
+- 低电平：fd上没数据/fd不可写
+
+### **3.2.1 LT模式**
+
+LT又称为水平触发模式，是epoll的默认模式
+
+`触发条件`：状态处于高电平时触发
+- 状态从低电平 => 高电平
+    - socket读：socket上无数据 => socket上有数据
+    - socket写：socket不可写 => socket可写
+- 状态处于高电平
+    - socket读：socket处于有数据状态
+    - socket写：socket可写 => socket可写
+
+即对于socket读事件：只要socket上有未读完的数据，就会一直产生 POLLIN 事件；而对于socket写事件：如果socket的TCP窗口一直不饱和，会一直触发POLLOUT事件
+
+### **3.2.2 ET模式**
+
+`触发条件`：新来一次“电信号”，将当前状态变为高电平时触发
+- 状态从低电平 => 高电平
+    - socket读：socket上无数据 => socket上有数据，**或socket又新来一次数据**
+    - socket写：socket不可写 => socket可写
+
+即对于socket读事件：socket上每新来一次数据就会触发一次，如果上一次触发后未将socket上的数据读完，除非再新来一次数据，否则将不会再触发；对于socket写事件，只会触发一次，除非TCP窗口由不饱和变成饱和再一次变成不饱和，才会再次触发POLLOUT事件
+
+### **3.2.3 总结**
+
+> [LT和ET的区别](https://zhuanlan.zhihu.com/p/363938781)：讲述了LT和ET的例子，忘记的时候可以详细再看一下
+
+LT：
+- 读事件，可以按需收取自己想要的字节数，不需要将本次socket接受到的数据收取干净，即不需要读取到read()返回EWOULDBLOCK或EAGAIN为止（但大部分仍然还是以EAGAIN为止）
+- 写事件，如果依赖于EPOLLOUT事件触发取发送数据，则在不需要EPOLLOUT事件时，一定要及时移除掉**监测EPOLLOUT事件**，否则会一直触发（即使已经没数据可发送），**造成极大的性能开销**
+
+    假设需要写出1M数据，缓冲区大小为256KB且已被写满，write()会返回EAGAIN
+
+    如果在LT模式下，当socket从低电平到高电平，甚至一直在高电平的状态下，如果通过依赖**监测EPOLLOUT**进行写数据，将会被一直触发
+
+ET：
+- 读事件，一定要循环读取到返回EWOULDBLOCK或EAGAIN为止，因为只会触发一次，且不能保证下一次的收取时机，这将会导致数据读取不完整，或者对客户端的响应有延迟
+
+- 写事件触发后，如果需要发送的数据量过大，超过了socket的写缓冲区，则需要继续注册一次检测可写事件，来触发下一个写事件
+
+    假如需要写出1M的数据，缓冲区大小为256KB且已被写满，write()会返回EAGAIN
+    
+    如果在ET模式下，当socket从低电平到高电平（不可写到可写）时，只会**触发一次**EPOLLOUT事件。当有事件时，继续写出剩余的数据，直至没有数据可写时，不处理即可，后续也将不会再被触发
+
+ET在写事件上可以极大的提升性能，相比LT，它**不需要频繁添加EPOLLOUT事件，以及在使用完毕时及时移除，达到EPOLLOUT的复用性**
+
+> [epoll的边沿触发模式(ET)真的比水平触发模式(LT)快吗？](https://www.zhihu.com/question/20502870/answer/89738959)
+
+    总体来说，ET处理EPOLLOUT方便高效些，LT不容易遗漏事件、不易产生bug如果server的响应通常较小，不会触发EPOLLOUT，那么适合使用LT，例如redis等。而nginx作为高性能的通用服务器，网络流量可以跑满达到1G，这种情况下很容易触发EPOLLOUT，则使用ET。关于某些场景下ET模式比LT模式效率更好，我有篇文章进行了详细的解释与测试，参看
 
 ## **3.3 总结**
 
+从select()的整体视角看来，最大的性能问题出现在了：
+- 每次调用select()进行监测时，都需要从用户空间向内核空间传入fd_set，内存拷贝开销巨大
+- socket在完成数据准备后，会将进程从**全部socket等待列表**移除，这让进程无法立即感知到是哪些socket就绪，只能通过遍历的方式筛选一遍，效率低
 
+> 本质问题就是：将**进程阻塞和文件描述符集合的维护**耦合在一起，流程难以突破
+
+所以针对以上的问题，epoll具有以下特点：
+
+- epoll()使用一组函数来完成任务，而不是单个函数，解决了本质问题
+
+    ```c++
+    int epoll_create(int size);
+
+    int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
+
+    int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout);
+    ```
+
+- epoll把用户关心的fd上的事件放在**内核的一个事件表(eventpoll)中**，通过eventpoll进行操作，进行解耦
+
+    可以做到：
+    1. 避免像select()和poll()一样每次调用都要重复传入fd_set或pollfds
+
+    2. eventpoll本身以红黑树的方式组织加入的epitem结点（epoll下的fd），提升增删的效率，方便快速新增或删除原有的fd；兼顾查找效率，可以**避免添加相同的结点**
+
+- eventpoll提供就绪列表，并提供socket回调，所以epoll()可以不通过轮询的方式感知就绪fd，而是直接获取就绪列表，可以极大地提升性能
+
+    > select/poll：轮询监测传入的fd集，有就绪时返回
 
 # 参考
 - [select函数及fd_set介绍](https://www.cnblogs.com/wuyepeng/p/9745573.html)
@@ -409,3 +490,4 @@ struct epoll_event {
 - [I/O多路复用之select](https://blog.csdn.net/fengxinlinux/article/details/75268914)
 - [I/O多路复用之poll](https://blog.csdn.net/fengxinlinux/article/details/75303969)
 - [I/O多路复用之epoll](https://blog.csdn.net/fengxinlinux/article/details/75452740)
+- [从操作系统视角看epoll](https://blog.csdn.net/qq_31967569/article/details/89678482)

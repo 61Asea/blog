@@ -63,6 +63,7 @@ epoll rbr和rdlist -->
 - [linux文件描述符限制及使用](https://blog.csdn.net/guotianqing/article/details/82313996)
 - [fd_set文字解释](https://www.cnblogs.com/wuyepeng/p/9745573.html)
 - [fd_set结构](https://www.freesion.com/article/42831060952/)
+- [5种IO，入门篇](https://zhuanlan.zhihu.com/p/115912936)
 
 # 重点参考
 - [原来 8 张图，就可以搞懂「零拷贝」了](https://zhuanlan.zhihu.com/p/258513662)
