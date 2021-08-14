@@ -31,27 +31,53 @@ epoll rbr和rdlist -->
 
 # **1. 五大模型**
 
-同步IO：I/O发生期间，进程会被阻塞住的，就算是同步IO
+- 同步IO：I/O**发生期间**，进程会被阻塞
 
-> A synchronous I/O operation causes the requesting process to be blocked until that **I/O operation** completes
+    > A synchronous I/O operation causes the requesting process to be blocked until that **I/O operation** completes
 
-> An asynchronous I/O operation does not cause the requesting process to be blocked
+- 异步IO：I/O**发生期间**，进程不会被阻塞住
+
+    > An asynchronous I/O operation does not cause the requesting process to be blocked
 
 ## **1.1 阻塞IO（Blocking I/O）**
 
 ![阻塞IO](https://asea-cch.life/upload/2021/08/%E9%98%BB%E5%A1%9EIO-3e0f2ba38005420785772ad37b2c7a7d.gif)
 
-在linux中，默认情况下所有的socket都是blocking的
+在linux中，默认情况下所有的socket都是blocking的。在基础的socket编程中，同样也是使用阻塞IO
 
-当用户进程调用recvfrom()，会从用户态陷入内核态，
+> 在这种前提下，催生了一个线程对应一个socket的模型，并通过起多线程或用线程池的方式来实现程序与客户端的网络交互架构
+
+`阻塞`：当用户进程调用recvfrom()，会从用户态陷入内核态，并阻塞至**用户进程空间数据拷贝完毕**为止
+
+> 在`数据准备阶段`和`kernel拷贝用户空间`两个阶段，都是阻塞的
+
+按照上述同步IO的定义，阻塞IO模型也可以称为`同步阻塞I/O`
 
 ## **1.2 非阻塞IO（NonBlocking I/O）**
 
+![非阻塞IO](https://asea-cch.life/upload/2021/08/%E9%9D%9E%E9%98%BB%E5%A1%9EIO-f6a826fe48914c9daee7b1b70a94a67b.gif)
+
+`非阻塞`：当用户进程调用recvfrom()，如果数据并未准备好，则进程将不会被阻塞，而是返回-1状态码
+
+> 在这种I/O模型下，进程需要自行**轮询监测**，以单线程对应单socket的模型来看，当服务器需要维护多个socket时，轮询监测的CPU开销是巨大的
+
+按照上述同步IO定义，非阻塞IO模型也可以称为`同步非阻塞I/O`
+
+> 注意：因为强调的是IO发生期间，即kernel拷贝数据到用户空间这个过程，非阻塞I/O的进程仍需陷入内核态占用CPU，自行进行数据拷贝
+
 ## **1.3 I/O多路复用（I/O multiplexing）**
+
+> [select&poll&epoll](https://asea-cch.life/achrives/select&poll&epoll)：总结了I/O多路复用的三种模型
+
+![IO多路复用](https://asea-cch.life/upload/2021/08/IO%E5%A4%9A%E8%B7%AF%E5%A4%8D%E7%94%A8-07df85c4276b48ed8abec21febe777bb.gif)
 
 ## **1.4 信号驱动I/O（Signal driven I/O）**
 
+
+
 ## **1.5 异步I/O（asynchronous I/O）**
+
+![异步IO](https://asea-cch.life/upload/2021/08/%E5%BC%82%E6%AD%A5IO-5214de95080e4c35a195b4b4e082755f.gif)
 
 # **2. BIO & NIO**
 
