@@ -1,35 +1,12 @@
 # IO模型
 
-<!-- 
-5大IO模型：
-- 同步阻塞IO
-- 同步非阻塞IO（同步非阻塞I/O，第二个过程会阻塞）
-- IO多路复用（基于选择器的同步非阻塞I/O，同样第二个过程会阻塞）
-- 信号驱动IO（基于信号驱动，第二个过程同样会阻塞，属于同步IO）
-- 异步IO（异步非阻塞I/O，两个过程都不阻塞）
-
-- 同步IO：IO调用期间会被BLOCK住的，都算同步IO。所以阻塞IO一定是同步IO
-    - 同步阻塞IO：在调用IO会一直block住
-    - 同步非阻塞IO：在kernel准备数据的阶段中，可以返回，但是在kernel将数据复制到用户进程时会阻塞
-- 异步IO：一定也是非阻塞IO
-
-NIO使用的也是I/O 多路复用的思想，并基于reactor模型将调度线程抽象为选择器，所以NIO/IO复用模型为：同步非阻塞IO
-epoll rbr和rdlist -->
-
 > [《文件传输》](https://asea-cch.life/achrives/文件传输)：介绍了现代文件传输的流程，其中包括DMA、零拷贝、kernel pagecache等概念。得出结论，大文件传输使用异步I/O（直接I/O），少量数据则使用零拷贝（缓存I/O）技术
 
-本文以**网络传输I/O为上下文**，继续围绕`内核空间`和`进程空间`，在`进程的视角`上总结5大模型：
-- 阻塞I/O（Blocking I/O）
-- 非阻塞I/O（NonBlocking I/O）
-- IO多路复用（I/O multiplexing）
-- 信号驱动I/O（Signal driven I/O）
-- 异步I/O（asynchronous I/O）
-
-同样的，I/O发生与等待的步骤，一定是基于以下两个立足点：
+I/O发生与等待的步骤，一定是基于以下两个立足点：
 1. kernel数据准备（DMA拷贝）
 2. 将数据从内核拷贝到进程中（CPU拷贝）
 
-# **1. 五大模型**
+![blockingio](https://asea-cch.life/upload/2021/08/blockingio-234da8a48f0c42e39a67011bae148b78.png)
 
 - 同步IO：I/O**发生期间**，进程会被阻塞
 
@@ -39,17 +16,42 @@ epoll rbr和rdlist -->
 
     > An asynchronous I/O operation does not cause the requesting process to be blocked
 
+# **1. 五大模型**
+
+本文以**网络传输I/O为上下文**，继续围绕`内核空间`和`进程空间`，在`进程的视角`上总结5大模型：
+- 阻塞I/O（Blocking I/O）
+
+    同步阻塞I/O，两个过程都会阻塞
+
+- 非阻塞I/O（NonBlocking I/O）
+
+    同步非阻塞I/O，第二个过程会阻塞
+
+- IO多路复用（I/O multiplexing）
+
+    基于选择器的同步非阻塞I/O，同样第二个过程会阻塞
+
+- 信号驱动I/O（Signal driven I/O）
+
+    基于信号驱动，第二个过程同样会阻塞，属于同步IO
+
+- 异步I/O（asynchronous I/O）
+
+    异步非阻塞I/O，两个过程都不阻塞
+
 ## **1.1 阻塞IO（Blocking I/O）**
 
 ![阻塞IO](https://asea-cch.life/upload/2021/08/%E9%98%BB%E5%A1%9EIO-3e0f2ba38005420785772ad37b2c7a7d.gif)
 
-在linux中，默认情况下所有的socket都是blocking的。在基础的socket编程中，同样也是使用阻塞IO
+在linux中，默认情况下所有的socket都是blocking的。在基础的socket编程中，同样也是使用阻塞IO，这是最省事、最简单的I/O模型
 
 > 在这种前提下，催生了一个线程对应一个socket的模型，并通过起多线程或用线程池的方式来实现程序与客户端的网络交互架构
 
 `阻塞`：当用户进程调用recvfrom()，会从用户态陷入内核态，并阻塞至**用户进程空间数据拷贝完毕**为止
 
-> 在`数据准备阶段`和`kernel拷贝用户空间`两个阶段，都是阻塞的
+用途：简单易懂，经常被用于每线程对应单socket的架构模型
+
+> 在`数据准备阶段`和`kernel拷贝用户空间`两个阶段，**进程**都会阻塞，前者阻塞时CPU可以执行其它进程；后者阻塞时进程陷入内核态，占用CPU进行拷贝
 
 按照上述同步IO的定义，阻塞IO模型也可以称为`同步阻塞I/O`
 
@@ -57,7 +59,9 @@ epoll rbr和rdlist -->
 
 ![非阻塞IO](https://asea-cch.life/upload/2021/08/%E9%9D%9E%E9%98%BB%E5%A1%9EIO-f6a826fe48914c9daee7b1b70a94a67b.gif)
 
-`非阻塞`：当用户进程调用recvfrom()，如果数据并未准备好，则进程将不会被阻塞，而是返回-1状态码
+`非阻塞`：当用户进程调用recvfrom()/read()，如果数据并未准备好，则进程将不会被阻塞，而是返回一个错误值**EWOULDBLOCK**
+
+用途：一般结合I/O多路复用的三大模型，组成完整的I/O多路复用模型
 
 > 在这种I/O模型下，进程需要自行**轮询监测**，以单线程对应单socket的模型来看，当服务器需要维护多个socket时，轮询监测的CPU开销是巨大的
 
@@ -67,19 +71,42 @@ epoll rbr和rdlist -->
 
 ## **1.3 I/O多路复用（I/O multiplexing）**
 
-> [select&poll&epoll](https://asea-cch.life/achrives/select&poll&epoll)：总结了I/O多路复用的三种模型
-
 ![IO多路复用](https://asea-cch.life/upload/2021/08/IO%E5%A4%9A%E8%B7%AF%E5%A4%8D%E7%94%A8-07df85c4276b48ed8abec21febe777bb.gif)
+
+又被称为事件驱动I/O（event driven I/O）
+
+`多路复用`：使单进程具备监测多个I/O的数据就绪状态的能力，相对one thread per socket模型的开销更小
+
+用途：用于提升服务处理的连接个数，适用于具备大量网络连接的场景。它并不能提升单个连接的交互速度，甚至在小并发场景下性能没有阻塞I/O高
+
+按照上述同步IO的定义，阻塞IO模型也可以称为`同步阻塞I/O`
+
+> [select&poll&epoll](https://asea-cch.life/achrives/select&poll&epoll)：总结了I/O多路复用的三种模型
 
 ## **1.4 信号驱动I/O（Signal driven I/O）**
 
+应用进程使用sigaction调用，不同于I/O多路复用，等待数据准备的过程为**非阻塞**
 
+`信号驱动`：内核会在数据到达后向应用进程发送SIGIO信号，意味进程**无须轮询数据就绪状态**
+
+用途：sigaction适用范围较小，一般的普通fd不支持，适用面较少
+
+按照上述同步IO的定义，阻塞IO模型也可以称为`同步阻塞I/O`
 
 ## **1.5 异步I/O（asynchronous I/O）**
 
 ![异步IO](https://asea-cch.life/upload/2021/08/%E5%BC%82%E6%AD%A5IO-5214de95080e4c35a195b4b4e082755f.gif)
 
+`异步`：用户进程在系统调用后整个过程（两个阶段）都不会阻塞，由内核CPU进行kernel数据到用户进程的拷贝，完成后再通知进程
+
+用途：典型的有Node这种类似的并发IO密集型的高性能服务器
+
+> 注意：第二个阶段不会阻塞，进程可以转而执行其它操作，这提升了进程的CPU利用率与服务的吞吐量，但是有利有弊，第二个阶段仍然需要内核去占用CPU拷贝操作。所以，如果在**CPU计算密集**的场景下，进程对CPU的高占用势必会影响内核拷贝操作的速度，两者相互影响，反而会使得进程的吞吐量下降
+
+按照上述异步IO的定义，异步IO模型也可以称为`异步非阻塞I/O`。当然，异步肯定就是非阻塞的，一般场景下无须强调
+
 # **2. BIO & NIO**
+
 
 
 # 参考
