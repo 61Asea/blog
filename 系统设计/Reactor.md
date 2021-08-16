@@ -30,7 +30,9 @@ I/O多路复用（事件驱动I/O模型）
 
     **Channel会注册到Synchronous Event Demultiplexer中，以监听fd就绪情况**，对于`ServerSocketChannel`可以是`CONNECT`事件，对于`SocketChannel`可以是`READ`、`WRITE`、`CLOSE`事件
 
-    > 疑问：ServerSocketChannel是不是对于epfd，SocketChannel对应socketfd？
+    > 疑问：ServerSocketChannel是不是对应epfd，SocketChannel对应socketfd？
+    
+    答：selector对象实例对于epfd，socketchannel对于socket的fd，serversocketchannel也有对应fd，在初始化的时候先行注册
 
 - **Initiaion Dispatcher**
 
@@ -62,33 +64,41 @@ I/O多路复用（事件驱动I/O模型）
     - Synchronous Event Demultiplexer -> acceptor
 
 **具体交互流程如下**：
-1. 初始化Initiation Dispatcher，它是一种特殊的Event Handler，初始化一个Handle映射Initiation Dispatcher上
+1. 初始化Initiation Dispatcher，并初始化Handle（ServerSocketChannel）映射Initiation Dispatcher上
 
-    往往会初始化AcceptorEventHandler，
+    Innitiation Dispatcher主要负责根据事件类型进行dispatch，以及**注册/删除**Event Handler
 
-2. 注册Initiation Dispatcher
+2. 注册Event Handler到Initiation Dispatcher中，每个Event Handler应包含对相应Handle的引用
 
-# **1. 单线程Reactor**
+    > 第一个注册Event Handler是AcceptorEventHandler，用于接收CONNECT事件来创建Event Handler处理新连接
+
+3. 调用Intiation Dispatcher的handle_events()方法以启动Event Loop，在Event Loop中，调用select()方法（Synchronous Event Demultiplexer）阻塞等待Event发生
+
+4. 当某个Handle的Event发生后，select()方法返回，IntiationDispatcher根据返回的Handle，并回调该Event Handler的回调方法（Java返回的selectedKey就是event handler对象，key.attachment()就是之前注册的回调方法）
+
+# **2. 单线程Reactor**
 
 一种简单的Reactor模型，称为**Reactor朴素原型**，单线程指的是：`reactor`与`handler`处于同一个线程上
 
 具体应用案例：使用main线程实现Java的NIO模式的Selector网络通讯
 
-```java
-public class NIOSingleDemo {
+在Java中，用Selector类封装了Synchronous Event Demultiplexer的功能。不同于使用Intiation Dispatcher来管理Event Handler，Java通过SelectedKey的`attchment对象`来存储对应的`Event Handler`，这样在select()方法返回时可直接调用，无须注册EventHandler这个步骤，或者说设置Attachment就是这里的注册
 
-}
+```java
+
 ```
 
-<!-- 
-今日总结：学习了reactor模型，简单接触了单线程和多线程的reactor
+优点：相比传统模型，Reactor可以减少线程的使用，并提供了模块化、解耦功能等优点
 
-后续：
-1. 拆分以下reactor和acceptor的概念，然后看清楚5个组成部分，由重点参考的文章入手学习
+缺点：I/O读写数据和接收新连接都是在同一个线程实现的，共享一个Reactor的Channel如果出现某个长时间的数据读写阻塞，会影响其它Channel执行，得不到即使处理导致响应时间变长，且这个期间也不能接收新的连接
 
-2. 看Java的NIO，它是个单线程reactor模型，看第一篇文章的demo
+# **3. 多线程Reactor**
 
- -->
+基于单线程Reactor的缺点，进行以下改进：
+1. 将Handler处理器的执行放入线程池中，多线程进行业务处理
+2. 将Reactor的职责拆分，演化为一个Main Reactor和多个Sub Reactor，Main Reactor主要处理CONNECT事件，而多个Sub Reactor来处理READ、WRITE事件，这些可以分别在自己的线程中执行
+
+具体应用案例：Netty
 
 # 参考
 - [Reactor模式简介](https://www.cnblogs.com/crazymakercircle/p/9833847.html)
