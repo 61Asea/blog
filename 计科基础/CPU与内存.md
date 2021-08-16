@@ -36,6 +36,8 @@ L1，L2，L3 Cache分别称为一级，二级，三级缓存，L1缓存集成在
 
 ## **1.2 CacheLine 缓存行：**
 
+> [伪共享，缓存行填充（CacheLine补齐）](https://blog.csdn.net/qq_27428109/article/details/74781774)
+
 CacheLine是L1/L2/L3Cache的基本单位，主流大小为64个字节
 
 缓存行填充机制会尽可能地填充相邻内存，直到缓存行填满，系统用**填充上的所有字的内存地址来对缓存行进行标记**

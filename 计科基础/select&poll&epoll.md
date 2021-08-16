@@ -386,6 +386,66 @@ epoll()只需要往rdlist执行出队操作取出就绪socket，而不是像以�
 
 `底层实现`：双向链表
 
+### **3.1.4 Java NIO**
+
+对应到Java NIO中：
+```java
+private void acceptHandler(SelectionKey key) {
+    try {
+        ServerSocketChannel ssc = (ServerSocketChannel)key.channel();
+        // 真正accept()，创建对应的客户端clientFd
+        SocketChannel client = ssc.accept();
+        client.configureBlocking(false);
+        ByteBuffer buffer = ByteBuffer.allocate(8192);
+        // epoll：epoll_ctl(epfd, ADD, clientFd, EPOLLIN)
+        client.register(selector, Selection.OP_READ, buffer);
+    } catch(IOException e) {
+        e.printStackTrace();
+    }
+}
+
+public static void main(String[] args) {
+    ServerSocketChannel server = ServerSocketChannel.open();
+    server.configureBlocking(false);
+    server.bind(new InetSocketAddress(10000));
+
+    // epoll下：epoll_create()，返回了epfd
+    Selector selector = Selector.open();
+    // epoll下：epoll_ctl(epfd, ADD, newfd, EPOLLIN);
+    // 相当于Reactor模型中的acceptor，用于接收accept事件
+    SelectionKey sk = server.register(selector, SelectionKey.OP_ACCEPT);
+    sk.attach(new Acceptor());
+
+    try {
+        while (true) {
+            // 调用I/O多路复用模型，根据操作系统特性调用select()/poll()/epoll()
+            // epoll下：epoll_wait()
+            int n = selector.select();
+            if (n > 0) {
+                // epoll_wait有返回，直接从就绪列表中取出所有就绪的epitem
+                Set<SelectionKey> keys = selector.selectedKey();
+                Iterator<SelectionKey> it = keys.iterator();
+                while (it.hasNext()) {
+                    // 就绪的fd，包含CONNECT、READ、WRITE事件
+                    SelectionKey key = it.next();
+                    it.remove();
+                    if (key.isAcceptable()) {
+                        // 在这里的ACCEPT类型的key对应的handler，都是Reactor线程
+                        acceptHandle(key);
+                    } else if (key.isReadable()) {
+                        SocketChannel client = (SocketChannel)key.channel();
+                        ByteBuffer buffer = (ByteBuffer)key.attachment();
+                        buffer.clear();
+                    }
+                }
+            }
+        }
+    } catch (IOException e) {
+        e.printStackTrace();
+    }
+}
+```
+
 ## **3.2 epoll模式**
 
 epoll对epoll_fd有两种操作模式：LT（Level Trigger）模式和ET（Edge Trigger）模式
