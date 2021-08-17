@@ -84,8 +84,158 @@ I/O多路复用（事件驱动I/O模型）
 
 在Java中，用Selector类封装了Synchronous Event Demultiplexer的功能。不同于使用Intiation Dispatcher来管理Event Handler，Java通过SelectedKey的`attchment对象`来存储对应的`Event Handler`，这样在select()方法返回时可直接调用，无须注册EventHandler这个步骤，或者说设置Attachment就是这里的注册
 
-```java
+![单线程Reactor](https://asea-cch.life/upload/2021/08/%E5%8D%95%E7%BA%BF%E7%A8%8BReactor-89f6be31248d486c9fc3ace557b6c8ef.jpg)
 
+```java
+package nio.single;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.nio.channels.SocketChannel;
+
+public class Handler implements Runnable {
+    private static int READING = 1;
+
+    private static int SENDING = 2;
+
+    private Selector selector;
+
+    private SocketChannel client;
+
+    private SelectionKey sk;
+
+    private int state = READING;
+
+    private ByteBuffer inputBuffer = ByteBuffer.allocate(1024);
+
+    private ByteBuffer outputBuffer = ByteBuffer.allocate(1024);
+
+    public Handler(Selector selector, SocketChannel socketChannel) throws IOException {
+        this.selector = selector;
+        this.client = socketChannel;
+        this.client.configureBlocking(false);
+        this.sk = client.register(selector, SelectionKey.OP_READ, this);
+        this.selector.wakeup();
+    }
+
+    public boolean inputIsComplete() {
+        return false;
+    }
+
+    public boolean outputIsComplete() {
+        return false;
+    }
+
+    public void read() throws IOException {
+        client.read(inputBuffer);
+        if (inputIsComplete()) {
+            // 执行业务逻辑，传入inputBuffer
+            state = SENDING;
+            sk.interestOps(SelectionKey.OP_WRITE);
+        }
+    }
+
+    public void write() throws IOException {
+        client.write(outputBuffer);
+        if (outputIsComplete()) {
+            state = READING;
+            sk.interestOps(SelectionKey.OP_READ);
+        }
+    }
+
+    @Override
+    public void run() {
+        try {
+            if (state == READING) {
+                read();
+            } else if (state == SENDING) {
+
+            }
+        } catch (IOException ex) {
+            ex.printStackTrace();
+        }
+    }
+}
+```
+
+单线程模型下的Reactor，既需要处理监听事件，还要处理分发，甚至在真实业务上还是通过该线程进行处理：
+
+```java
+package nio.single;
+
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
+import java.util.Iterator;
+import java.util.Set;
+
+public class Reactor implements Runnable {
+    protected Selector selector;
+
+    protected ServerSocketChannel ssc;
+
+    public Reactor(int port) {
+        init(port);
+    }
+
+    public void init(int port) {
+        try {
+            selector = Selector.open();
+            ssc = ServerSocketChannel.open();
+            ssc.socket().bind(new InetSocketAddress(port));
+            ssc.configureBlocking(false);
+
+            SelectionKey sk = ssc.register(selector, SelectionKey.OP_ACCEPT);
+            sk.attach(new Acceptor());
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void dispatch(SelectionKey key) {
+        Runnable r = (Runnable) key.attachment();
+        if (r != null) {
+            r.run();
+        }
+    }
+
+    @Override
+    public void run() {
+        try {
+            while (!Thread.interrupted()) ;
+            selector.select();
+            Set<SelectionKey> keys = selector.selectedKeys();
+            Iterator<SelectionKey> it = keys.iterator();
+            while (it.hasNext()) {
+                dispatch(it.next());
+            }
+            keys.clear();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    class Acceptor implements Runnable {
+        @Override
+        public void run() {
+            try {
+                SocketChannel socketChannel = ssc.accept();
+                new Handler(selector, socketChannel);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
+    public static void main(String[] args) throws IOException {
+        new Reactor(10000).run();
+    }
+}
 ```
 
 优点：相比传统模型，Reactor可以减少线程的使用，并提供了模块化、解耦功能等优点
@@ -100,8 +250,246 @@ I/O多路复用（事件驱动I/O模型）
 
 具体应用案例：Netty
 
+![多线程Reactor](https://asea-cch.life/upload/2021/08/%E5%A4%9A%E7%BA%BF%E7%A8%8BReactor-d4b943e8970c43bbbcc50ee6e595d6ae.jpg)
+
+以下代码将Reactor拆分为Main和Sub两种概念，Main Reactor主要负责监听socket连接，Sub Reactor用于负责connection的读/写操作，每个Reactor起一个线程
+
+在EventHandler处理中，将业务逻辑丢入线程池中处理，防止业务阻塞
+
+```java
+package nio.current;
+
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.nio.channels.ServerSocketChannel;
+import java.util.Iterator;
+import java.util.Set;
+
+import static java.nio.channels.SelectionKey.OP_READ;
+
+/**
+ * 拆分出Main Reactor和Sub Reactor的概念
+ *
+ */
+public class CurrentReactor implements Runnable {
+    public Selector sl;
+
+    public ServerSocketChannel ssc;
+
+    public SubReactor[] subReactors;
+
+    public CurrentReactor(int port, int nThread) throws IOException {
+        sl = Selector.open();
+        ssc = ServerSocketChannel.open();
+        ssc.bind(new InetSocketAddress(port));
+        ssc.configureBlocking(false);
+        // ConcurrentAcceptor会将往subSls中注册可读事件的fd
+        ssc.register(sl, OP_READ, new ConcurrentAcceptor(this));
+        this.subReactors = new SubReactor[nThread];
+        for (int i = 0; i < 2; i++) {
+            subReactors[i] = new SubReactor(Selector.open());
+        }
+    }
+
+    public void dispatch(SelectionKey k) {
+        Runnable r = (Runnable) k.attachment();
+        if (r != null) {
+            r.run();
+        }
+    }
+
+    @Override
+    public void run() {
+        try {
+            for (int i = 0; i < subReactors.length; i++) {
+                // 启动处理connection的线程
+                new Thread(subReactors[i]).start();
+            }
+
+            while (!Thread.interrupted());
+            sl.select();
+            Set<SelectionKey> keySet = sl.selectedKeys();
+            Iterator<SelectionKey> it = keySet.iterator();
+            while (it.hasNext()) {
+                dispatch(it.next());
+            }
+        } catch (IOException ex) {
+            ex.printStackTrace();
+        }
+    }
+
+    class SubReactor implements Runnable {
+        private Selector subSelector;
+
+        SubReactor(Selector subSelector) {
+            this.subSelector = subSelector;
+        }
+
+        @Override
+        public void run() {
+            try {
+                while (!Thread.interrupted());
+                this.subSelector.select();
+                Set<SelectionKey> keySet = sl.selectedKeys();
+                Iterator<SelectionKey> it = keySet.iterator();
+                while (it.hasNext()) {
+                    dispatch(it.next());
+                }
+            } catch (IOException ex) {
+                ex.printStackTrace();
+            }
+        }
+    }
+
+    public static void main(String[] args) throws IOException {
+        CurrentReactor mainCurrentReactor = new CurrentReactor(10000, 2);
+        mainCurrentReactor.run();
+    }
+}
+```
+
+Acceptor被单独拆分出来：
+
+```java
+package nio.current;
+
+import java.io.IOException;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
+
+public class ConcurrentAcceptor implements Runnable {
+    public int next = 0;
+
+    public ServerSocketChannel ssc;
+
+    public CurrentReactor.SubReactor[] subReactors;
+
+    public ConcurrentAcceptor(CurrentReactor currentReactor) {
+        this.ssc = currentReactor.ssc;
+        this.subReactors = currentReactor.subReactors;
+    }
+
+    @Override
+    public void run() {
+        try {
+            SocketChannel client = ssc.accept();
+            if (client == null) {
+                return;
+            }
+
+            new CurrentHandler(subReactors[next].subSelector, client);
+            if (++next == subReactors.length) {
+                next = 0;
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+}
+
+```
+
+EventHandler线程池对真实业务进行处理，防止业务阻塞影响到其他连接的响应
+
+```java
+package nio.current;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.nio.channels.SocketChannel;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+
+public class CurrentHandler implements Runnable {
+
+    private Selector sl;
+
+    private SocketChannel sc;
+
+    // 对应channel
+    private SelectionKey sk;
+
+    private ByteBuffer input = ByteBuffer.allocate(1024);
+
+    private ByteBuffer output = ByteBuffer.allocate(1024);
+
+    private Sender sender;
+
+    private final static ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(5);
+
+    public CurrentHandler(Selector sl, SocketChannel sc) throws IOException {
+        this.sl = sl;
+        this.sc = sc;
+        this.sc.configureBlocking(false);
+        this.sk = this.sc.register(sl, SelectionKey.OP_READ, this);
+    }
+
+    public void handle() {
+        // 真正的业务逻辑
+        // ...
+
+        if (this.sender == null) {
+            this.sender = new Sender(this);
+            sk.attach(this.sender);
+        }
+        sk.interestOps(SelectionKey.OP_WRITE);
+        sl.wakeup();
+    }
+
+    public void process() throws IOException {
+        sc.read(input);
+        if (isInputComplete()) {
+            executor.execute(() -> handle());
+        }
+    }
+
+    public boolean isInputComplete() {
+        return false;
+    }
+
+    class Sender implements Runnable {
+        CurrentHandler handler;
+
+        Sender(CurrentHandler handler) {
+            this.handler = handler;
+        }
+
+        public boolean isOutputComplete() {
+            return false;
+        }
+
+        public void run() {
+            try {
+                sc.write(output);
+                if (isOutputComplete()) {
+                    sk.attach(handler);
+                    sk.interestOps(SelectionKey.OP_READ);
+                    sl.wakeup();
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
+    @Override
+    public void run() {
+        try {
+            process();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+}
+```
+
 # 参考
-- [Reactor模式简介](https://www.cnblogs.com/crazymakercircle/p/9833847.html)
+- [SelectionKey理解](https://www.cnblogs.com/burgeen/p/3618059.html)
 
 # 重点参考
+- [Reactor模式简介](https://www.cnblogs.com/crazymakercircle/p/9833847.html)
 - [Reactor模式详解](http://www.blogjava.net/DLevin/archive/2015/09/02/427045.html)
+- [Scalable IO in Java - 笔记](https://www.cnblogs.com/luxiaoxun/archive/2015/03/11/4331110.html)
