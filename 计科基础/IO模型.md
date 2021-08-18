@@ -107,7 +107,9 @@ I/O发生与等待的步骤，一定是基于以下两个立足点：
 
 # **2. BIO & NIO**
 
+> [操作系统中的BIO、NIO和多路复用器（SELECT、POLL、EPOLL）的演进和实现](https://blog.csdn.net/A232222/article/details/111054242)
 
+![socket结合NIO（epoll）](https://asea-cch.life/upload/2021/08/socket%E7%BB%93%E5%90%88NIO%EF%BC%88epoll%EF%BC%89-7e4a7d82e0274c28a89ce3afa1da06b2.png)
 
 # 参考
 - [BIO、NIO 入门（Netty 先导）](https://blog.csdn.net/w903328615/article/details/113914902?spm=1001.2014.3001.5501)
@@ -122,3 +124,4 @@ I/O发生与等待的步骤，一定是基于以下两个立足点：
 - [原来 8 张图，就可以搞懂「零拷贝」了](https://zhuanlan.zhihu.com/p/258513662)
 - [IO - 同步，异步，阻塞，非阻塞（亡羊补牢篇）](https://blog.csdn.net/historyasamirror/article/details/5778378)
 - [五种IO模型透彻分析](https://www.cnblogs.com/f-ck-need-u/p/7624733.html)
+- [操作系统中的BIO、NIO和多路复用器（SELECT、POLL、EPOLL）的演进和实现](https://blog.csdn.net/A232222/article/details/111054242)

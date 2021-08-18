@@ -553,3 +553,4 @@ ET在写事件上可以极大的提升性能，相比LT，它**不需要频繁�
 - [I/O多路复用之poll](https://blog.csdn.net/fengxinlinux/article/details/75303969)
 - [I/O多路复用之epoll](https://blog.csdn.net/fengxinlinux/article/details/75452740)
 - [从操作系统视角看epoll](https://blog.csdn.net/qq_31967569/article/details/89678482)
+- [操作系统中的BIO、NIO和多路复用器（SELECT、POLL、EPOLL）的演进和实现](https://blog.csdn.net/A232222/article/details/111054242)
