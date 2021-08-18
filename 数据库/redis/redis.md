@@ -305,9 +305,7 @@ Redis基于Reactor模式开发了网络事件处理器，这个处理器被称�
 ## **3.2 时间事件**
 
 分为两种：
-
 - 定时事件：让一段程序在指定的时间之后执行一次
-
 - `周期性时间`：让一段程序每隔指定时间就执行一次
 
 一个时间事件主要由三个属性组成：
@@ -336,6 +334,58 @@ Redis基于Reactor模式开发了网络事件处理器，这个处理器被称�
 - 处于集群模式下，对集群进行等定期同步和连接测试
 
 Redis服务器以`周期性事件`来运行serverCron函数，每隔一段时候，就会执行一次serverCron直至服务器关闭
+
+## **3.3 Redis整体运转机制**
+
+事件的调度和执行由`ae.c/aeProcessEvents()`负责
+
+```python
+def aeProcessEvents():
+
+    # 计算距离当前时间最近的时间事件
+    time_event = aeSearchNearestTimer()
+
+    # 计算到达最接近的时间事件还有多少毫秒
+    remaind_ms = time_event.when - unix_ts_now()
+
+    # 可能在计算过程中，事件已经到达了该执行的事件，所以设置为0
+    if remaind_ms < 0
+        remaind_ms = 0
+    timeval = create_timeval_with_ms(remaind_ms)
+
+    # 阻塞并等待文件事件产生，最大阻塞时间由上面的timeval计算获得，如果已经由时间事件到达，则这里传0
+    # 传0代表调用完后，立即返回，不会阻塞
+    aeApiPoll(timeval)
+
+    # 处理所以已产生的文件事件，这些事件由aeApiPoll获得
+    processFileEvent()
+
+    # 处理所有已到达的时间事件
+    processTimeEvents()
+```
+
+将以上的函数放入一个循环中，加上Redis初始化和清理的函数，就组成了Redis的主函数：
+
+```python
+def main():
+    # 初始化
+    init_server()
+
+    # loop
+    while server_is_not_shutdown():
+        aeProcessEvents()
+
+    # 清理
+    clean_server()
+```
+
+规则：
+
+1. aeApiPoll的最大阻塞时间由最接近到达的时间事件的事件差值决定，这可以避免服务器对时间事件进行轮询，又可以aeApiPoll阻塞过长时间，导致时间事件难以被处理
+
+2. 先处理文件事件，再处理时间事件，不会在中途中断事件的处理，也不会进行事件的抢占。所以可以降低两种事件的饥饿可能性
+
+3. 由于时间事件在文件事件之后执行，所以时间事件的实际处理时间通常比设定的when时间稍晚一些
 
 # 参考
 - [Redis设计与实现]()
