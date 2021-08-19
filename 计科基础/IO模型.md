@@ -125,3 +125,5 @@ I/O发生与等待的步骤，一定是基于以下两个立足点：
 - [IO - 同步，异步，阻塞，非阻塞（亡羊补牢篇）](https://blog.csdn.net/historyasamirror/article/details/5778378)
 - [五种IO模型透彻分析](https://www.cnblogs.com/f-ck-need-u/p/7624733.html)
 - [操作系统中的BIO、NIO和多路复用器（SELECT、POLL、EPOLL）的演进和实现](https://blog.csdn.net/A232222/article/details/111054242)
+- [Linux Socket编程（不限Linux）](https://www.cnblogs.com/skynet/archive/2010/12/12/1903949.html)
+- [Java NIO浅析](https://tech.meituan.com/2016/11/04/nio.html)
