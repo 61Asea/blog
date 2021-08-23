@@ -1,8 +1,10 @@
 # Redis类型键：zset
 
+> zset和set的重要区别在于前者有序且支持范围操作，后者无序，更深层次的原因在于双方底层结构的不同
+
 ## **编码方式**
 
-有序集合对象的编码可以是`REDIS_ENCODING_INTSET`或者`REDIS_ENCODING_HT`，这句话等价于：列表对象的底层实现可以是`intset`或者`hashtable`
+有序集合对象的编码可以是`REDIS_ENCODING_ZIPLIST`或者`REDIS_ENCODING_SKIPLIST`，这句话等价于：列表对象的底层实现可以是`ziplist`或者`skiplist`
 
 - 当使用ziplist作为zset键的底层结构时，每个集合元素使用**两个紧密相邻**的entry来存储
 
