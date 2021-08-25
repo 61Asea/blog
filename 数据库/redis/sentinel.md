@@ -347,5 +347,23 @@ slave_priority:100
 
     > 涉及到主从复制的一致性
 
+# **3. 总结流程**
+
+1. 以每10秒一次的频率，发送`INFO`命令获取主服务器的信息
+
+2. 以每10秒一次的频率，发送`INFO`命令获取从服务器的信息
+
+3. 每当获取到一个新服务器的信息，则对其建立命令连接和订阅连接
+
+4. 以每2秒一次的频率，发送`PUBLISH __sentinel__:hello "<s_ip>,<s_port>,<s_runid>,<s_epoch>,<m_name>,<m_ip>,<m_port>,<m_epoch>"`到服务器中，感知其他sentinel的存在，并组建成sentinel系统
+
+5. 以每秒一次的频率，发送`PING`命令到各个服务器中，当主服务器进行了无效回复时，认为其主观下线
+
+6. 认定某服务器主观下线后，发送`SENTINEL is-master-down-by-addr <ip> <port> <current_epoch> <runid>`询问其他sentinel（其他sentinel同样也会执行该操作），在获得`quorum`数量的认可后，认定该服务器进入客观下线状态
+
+7. sentinel向集群中的其它sentinel发送`SENTINEL is-master-down-by-addr ... <runid>`要求它们将其设置为局部leader，其它sentinel接收命令以先到先得，后到拒绝的方式。最终选举出leader sentinel
+
+8. leader sentinel根据规则选出新的主服务器，并将旧的主服务器设置新主的从服务器
+
 # 参考
 - [Redis设计与实现]()
