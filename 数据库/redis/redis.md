@@ -385,6 +385,108 @@ def main():
 
 3. 由于时间事件在文件事件之后执行，所以时间事件的实际处理时间通常比设定的when时间稍晚一些
 
+# **4. 发布订阅**
+
+发送命令：`PUBLISH`
+
+频道命令：`SUBSCRIBE`、`UNSUBSCRIBE`
+
+模式命令：`PSUBSCRIBE`、`PUNSUBSCRIBE`
+
+## **4.1 频道的订阅与退订**
+
+订阅：`SUBSCRIBE <channel>`，使用命令可以订阅服务器的某个或某些频道，该客户端就与被订阅的频道之间建立了订阅关系
+
+退订：`UNSUBSCRIBE <channel>`
+
+```c++
+struct redisServer {
+    // ...
+    // 保存所有频道的订阅关系
+    dict *pubsub_channels;
+}
+```
+
+> 服务器通过`pubsub_channels字典`，保存所有频道的订阅关系：键为某个被订阅的频道，值为一个链表，记录了所有订阅该频道的客户端
+
+根据链表值是否为空，订阅与退订分别有以下分支逻辑：
+
+- 订阅
+    - 链表为空：说明咱未有客户端订阅该频道，新创建一个链表到字典中，该客户端作为链表的第一个元素
+    - 链表不为空：说明有客户端已经订阅该频道，只需将客户端加入到链表尾部
+- 退订
+    - 删除后链表长度不为0: 仍有其他端订阅，直接返回即可
+    - 删除后链表长度为0：没有其他端进行订阅，将改键从订阅关系字典中删除
+
+## **4.2 模式的订阅与退订**
+
+订阅：`PSUBSCRIBE <channel>`
+
+退订：`PUNSUBSCRIBE <channel>`
+
+```c++
+struct redisServer {
+    //...
+    // 使用链表保存所有模式的订阅关系
+    list *pubsub_patterns;
+}
+```
+
+```c++
+typedef struct pubsubPattern {
+    // 订阅模式的客户端
+    redisClient *client;
+
+    // 被订阅的模式
+    robj *pattern;
+} pubsubPattern;
+```
+
+> 服务器通过`pubsub_patterns链表`，保存所有模式的订阅关系
+
+## **4.3 消息发布**
+
+发布：`PUBLISH <channel> <message>`
+- 消息message发送给channel频道的所有订阅者
+
+    通过redisServer.pubsub_channels字典，获取所有的订阅者，并向所有订阅者发布message
+
+- 如果有一个或多个模式与频道相匹配的话，那么将消息message发送给pattern模式的订阅者
+
+    遍历redisServer.pubsub_patterns链表，将命令的channel与每一个pubsubPattern节点的pattern属性进行正在匹配
+    
+    成功的话则发送message，失败则往下一个节点走
+
+## **4.4 查看订阅信息**
+
+- 查看服务器当前的频道名称：`PUBSUB CHANNELS [pattern]`
+
+    ```shell
+    redis> PUBSUB CHANNELS
+    1) "news.it"
+    2) "news.sport"
+    3) "news.business"
+
+    # [is]：字符'i'或字符's'
+    redis> PUBSUB CHANNELS "new.[is]*" 
+    1) "news.it"
+    2) "news.sport"
+    ```
+
+- 查看指定频道的`订阅者`数量：`PUBSUB NUMSUB [channel-1, channel-2, ...]`
+
+    ```shell
+    redis> PUBSUB NUMSUB news.it news.sport
+    1) "news.it"
+    2) "2"
+    3) "news.sport"
+    4) "1"
+    ```
+- 查看服务器当前被订阅的`模式`数量：`PUBSUB NUMPAT`
+
+# **5. 分布式锁**
+
+
 # 参考
 - [Redis设计与实现]()
 - [dackh-I/O模型总结](https://github.com/dackh/blog/blob/master/IO%E6%A8%A1%E5%9E%8B.md)
