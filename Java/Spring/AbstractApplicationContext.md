@@ -134,3 +134,19 @@ refreshBeanFactory方法由AbstractApplicationContext的子类实现：
     }
     ```
     > 注意：注解配置Bean的上下午，在此刻并没有加载beanDefinition
+
+<!-- 
+进度：
+
+1. 平行方向：开始区分ApplicationContext、Environment、PropertyResolver和BeanFactory的关系（ApplictionContext包含Environment和BeanFactory，Environment组合PropertyResolver）；垂直方向：开始了解上述前三者的继承关系和接口关系
+
+2. 持续梳理Environment和PropertyResolver的关系，目前得出简单结论：Environment和PropertyResolver的相同接口方法，具体实现都在PropertyResolver中
+
+3. 平行方向上，加入BeanFactory模块，与ApplicationContext进行联动
+ -->
+
+ # 参考
+ - [历时三个月，史上最详细的Spring注解驱动开发系列教程终于出炉了，给你全新震撼](https://liayun.blog.csdn.net/article/details/115053350)
+ - [IOC](https://mp.weixin.qq.com/s/0zDCy0eQycdM8M9eHGuLEQ)
+ - [Environment](https://www.cnblogs.com/liuenyuan1996/p/11133984.html)
+ - [从BeanDefinition和PostProcessor来理解IOC和DI](https://www.zhihu.com/question/48427693/answer/723146648)
