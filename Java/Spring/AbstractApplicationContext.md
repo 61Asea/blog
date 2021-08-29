@@ -252,13 +252,191 @@ protected void prepareBeanFactory(ConfigurableListableBeanFactory beanFactory) {
 
 4. postProcessBeanFactory(beanFactory)
 
-作用：如果有bean实现了`BeanFactoryPostProcessor`接口，那么在容器初始化之后，Spring会负责调用里面的postProcessBeanFactory方法
+```java
+/**
+ * 在应用上下文标准初始化前，修改内部工厂
+ * 全部的bean definition将会被加载，但在此处还未被初始化
+ * 这个方法允许我们在确切的ApplictionContext实现类中，去注册一些特别的额外
+ * bean postProcessor
+ */
+protected void postProcessBeanFactory(ConfigurableListableBeanFactory beanFactory) {
+}
+```
+
+作用：不同的上下文对象可以在这一步中注册一些特殊的beanPostProcessor
 
 5. invokeBeanFactoryPostProcessors()
 
-<!-- 8月28日进度：今天看了bean的xml解析，以及注册到map中的过程，其中包括了并发问题的；还有初步认识了beanFactoryPostProcessor的概念
+```java
+protected void invokeBeanFactoryPostProcessors(ConfigurableListableBeanFactory beanFactory) {
+    // 关键一步，调用各个beanFactoryPostProcessor的post
+    PostProcessorRegistrationDelegate.invokeBeanFactoryPostProcessors(beanFactory, getBeanFactoryPostProcessors());
 
-后续：BeanFactoryPostProcessor接口实现类是如何被调用的，invokeBeanFactoryPostProcessors？postProcessBeanFactory方法到底是干嘛用的 -->
+    // if (beanFactory.getTempClassLoader() == null && beanFactory.containsBean(LOAD_TIME_WEAVER_BEAN_NAME)) {
+    //     beanFactory.addBeanPostProcessor(new LoadTimeWeaverAwareProcessor(beanFactory));
+    //     beanFactory.setTempClassLoader(new ContextTypeMatchClassLoader(beanFactory.getBeanClassLoader()));
+    // }
+}
+```
+
+根据不同的`规则`，会按照`不同的顺序`来调用`invokeBeanFactoryPostProcessors(...)`方法，以实现在bean实例化前做特殊操作的功能
+
+```java
+// PostProcessorRegistrationDelegate.java
+private static void invokeBeanFactoryPostProcessors(Collection<? extends BeanFactoryPostProcessor> postProcessors, ConfigurableListableBenFactory beanFactory) {
+    for (BeanFactoryPostProcessor postProcessor : postProcessors) {
+        // 调用传入的postProcessors
+        postProcessor.postProcessBeanFactory(beanFactory);
+    }
+}
+```
+
+作用：对beanFactory调用各个`beanFactoryPostProcessor`的`postProcessBeanFactory(beanFactory)`方法
+
+## **BeanFactoryPostProcessor和BeanPostProcessor的区别**
+
+BeanFactoryPostProcessor：由ApplicationContext管理，在bean**实例化**前调用执行
+
+BeanPostProcessor：由BeanFactory管理，在bean**初始化的前与后**调用执行
+
+6. registerBeanPostProcessors(ConfigurableListableBeanFactory beanFactory)
+
+```java
+protected void registerBeanPostProcessors() {
+    PostProcessorRegistrationDelegate.registerbeanPostProcessors(beanFactory, this);
+}
+```
+
+```java
+// PostProcessorRegistrationDelegate.java
+public static void registerBeanPostProcessors(ConfigurableListableBeanFactory beanFactory, AbstractApplicationContext applicationContext) {
+    // ...
+
+    registerBeanPostProcessors(beanFactory, priorityOrderedPostProcessors);
+}
+
+// 将beanPostProcessor注册到beanFactory的一个list
+private static void registerBeanPostProcessors(ConfigurableListableBeanFactory beanFactory, List<BeanPostProcessor> postProcessors) {
+    for (BeanPostProcessor postProcessor : postProcessors) {
+        beanFactory.addBeanPostProcessor(postProcessor);
+    }
+}
+```
+
+7. initMessageSourece()
+
+作用：初始化当前ApplicationContext的`MessageSource`，这部分涉及`国际化`
+
+8. initApplicationEventMulticaster()
+
+作用：初始化当前ApplicationContext的`事件广播器`，默认为`时间事件广播器`
+
+```java
+protected void initApplicationEventMulticaster() {
+    ConfigurableListableBeanFactory beanFactory = getBeanFactory();
+    if (beanFactory.containsLocalBean(APPLICATION_EVENT_MULTICASTER_BEAN_NAME)) {
+        // 如果有用户自定义的广播器，则加载用户
+        this.applicationEventMulticaster = beanFactory.getBean(APPLICATION_EVENT_MULTICASTER_BEAN_NAME, ApplicationEventMulticaster.class);
+
+        // ...
+    } else {
+        // 否则，使用默认的时间广播器
+        this.applicationEventMulticaster = new SimpleApplicationEventMulticaster(beanFactory);
+
+        // ...
+    }
+}
+```
+
+9. onRefresh()
+
+10. registerListeners()
+
+作用：往`事件广播器`中注册`事件监听器`
+
+```java
+protect void registerListeners() {
+    // ...
+
+    // 先添加set的一些监听器
+    for (ApplicationListener<?> listener : getApplicationListeners()）{
+        getApplicationEventMulticaster().addApplicationListener(listener);
+    }
+
+    // ...
+
+    // 通过配置读取一些监听器，并添加到事件广播器中
+    String[] listenerBeanNames = getBeanNamesForType(ApplicationListener.class, true, false);
+    for (String listenerBeanName : listenerBeanNames) {
+        getApplicationEventMulticaster().addApplicationListenerBean(listenerBeanName);
+    }
+
+    // ...
+
+    // 如果存在早期事件，则先进行发布
+    Set<ApplicationEvent> earlyEventsToProcess = this.earlyApplicationEvents;
+    this.earlyApplicationEvents = null;
+    if (earlyEventsToProcess != null) {
+        for (ApplicationEvent earlyEvent : earlyEventsToProcess) {
+            getApplicationEventMulticaster().multicastEvent(earlyEvent);
+        }
+    }
+}
+```
+
+11. finishBeanFactoryInitialization(ConfigurableListableBeanFactory beanFactory)
+
+作用：bean的`初始化`，负责初始化所有没有设置懒加载的`singleton bean`
+
+```java
+protected void finishBeanFactoryInitialization(ConfigurableListableBeanFactory beanFactory) {
+    // 如果用户自行配置了conversionService的bean，则在通过简单校验后，将其设置为beanFactory的conversionService
+    if (beanFactory.containsBean(CONVERSION_SERVICE_BEAN_NAME) && beanFactory.isTypeMatch(CONVERSION_SERVICE_BEAN_NAME, ConversionService.class)) {
+        beanFactory.setConversionService(
+            beanFactory.getBean(CONVERSION_SERVICE_BEAN_NAME, ConversionService.class);
+        );
+    }
+
+    if (!beanFactory.hasEmbeddedValueResolver()) {
+        beanFactory.addEmbeddedValueResolver(strVal -> getEnvironment().resolvePlaceholders(strVal));
+    }
+
+    // 先初始化LoadTimeWeaverAware类型的bean
+    String[] weaverAwareNames = beanFactory.getBeanNamesForType(LoadTimeWeaverAware.class, false, false);
+    for (String weaverAwareName : weaverAwareNames) {
+        getBean(weaverAwareName);
+    }
+
+    // 停止使用用于类型匹配的临时类加载器
+    beanFactory.setTempClassLoader(null);
+
+    // 冻结所有的bean的定义，已注册的bean定义将不会被修改或处理
+    beanFactory.freezeConfiguration();
+
+    // 重点！初始化
+    beanFactory.preInstantiateSingletons();
+}
+```
+
+- conversionService：bean用于将前端传过来的参数和controller方法上的参数格式转换时使用
+- EmbeddedValueResolver：方便读取`配置文件`的属性
+- preInstantiateSingletons()：真正的初始化方法
+
+```java
+// DefaultListableBeanFactory.java
+public void preInstantiateSingletons() throws BeansException {
+    // 之前按顺序注册bean的定义到一个List中（线程安全）
+    List<String> beanNames = new ArrayList<>(this.beanDefinitionNames);
+}
+```
+
+# 进度
+
+<!-- 
+8月28日进度：今天看了bean的xml解析，以及注册到map中的过程，其中包括了并发问题的；还有初步认识了beanFactoryPostProcessor的概念
+
+后续：BeanFactoryPostProcessor接口实现类是如何被调用的，invokeBeanFactoryPostProcessors？postProcessBeanFactory方法到底是干嘛用的（已完成）
+ -->
 
 <!-- 
 进度：
@@ -269,7 +447,7 @@ protected void prepareBeanFactory(ConfigurableListableBeanFactory beanFactory) {
 
 3. 平行方向上，加入BeanFactory模块，与ApplicationContext进行联动
 
-4. 继续啃beanDefinition的读取过程
+4. 继续啃beanDefinition的读取过程（已完成）
  -->
 
  # 参考
@@ -280,3 +458,4 @@ protected void prepareBeanFactory(ConfigurableListableBeanFactory beanFactory) {
 
  # 重点参考
  - [为什么在注册bean的时候要synchronized](https://www.cnblogs.com/daimzh/p/12854414.html)
+ - [Spring的BeanFactoryPostProcessor和BeanPostProcessor](https://blog.csdn.net/caihaijiang/article/details/35552859)
