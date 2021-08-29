@@ -425,8 +425,212 @@ protected void finishBeanFactoryInitialization(ConfigurableListableBeanFactory b
 ```java
 // DefaultListableBeanFactory.java
 public void preInstantiateSingletons() throws BeansException {
-    // 之前按顺序注册bean的定义到一个List中（线程安全）
+    // 复制之前“按顺序注册bean定义”的线程安全List
     List<String> beanNames = new ArrayList<>(this.beanDefinitionNames);
+
+    // 对所有不懒加载的bean进行初始化单例
+    for (String beanName : beanNames) {
+        // 合并父bean中的配置，注意<bean id = "" class = "" parent = ""/>中的parent属性
+        RootBeanDefinition bd = getMergedLocalBeanDefinition(beanName);
+
+        // 不是抽象类、是单例的且不是懒加载的
+        if (!bd.isAbstract() && bd.isSingleton() && !bd.isLazyInit()) {
+            // 处理Factory Bean
+            if (isFactoryBean(beanName)) {
+                // &[beanName]，在bean名字前加上“&”
+                final FactoryBean<?> factory = (FactoryBean<?>) getBean(FACTORY_BEAN_PREFIX + beanName);
+                // 判断当前FactoryBean是否是SmartFactoryBean的实现
+                boolean isEagerInit;
+                if (System.getSecurityManager() != null && factory instanceof SmartFactoryBean) {
+                    isEagerInit = AccessController.doPrivileged((PrivilegedAction<Boolean>) () -> (SmartFactoryBean<?> factory).isEagerInit(), getAccessControlContext());
+                } else {
+                    isEagerInit = (factory instanceof SmartFactoryBean && ((SmartFactoryBean<?>) factory).isEagerInit());
+                }
+            } else {
+                // 重要方法
+                getBean(beanName);
+            }
+        }
+
+        for (String beanName : beanNames) {
+            // 经过上面的getBean方法后，bean都将被实例化
+            Object singletonInstance = getSingleton(beanName);
+            if (singletonInstance instanceof SmartInitializingSingleton) {
+                final SmartInitializingSingleton smartSingleton = (SmartInitializingSingleton) singletonInstance;
+                if (System.getSecurityManager() != null) {
+                    AccessController.doPrivileged((PrivilegedAction<Object>) () -> {
+                        smartSingleton.afterSingletonsInstantiated();
+                        return null;
+                    }, getAccessControlContext());
+                } else {
+                    smartSingleton.afterSingletonsInstantiated();
+                }
+            }
+        }
+    }
+}
+```
+
+无论bean是否属于工厂，都会调用`getBean(String beanName)`方法，该方法将对bean进行`实例化`：
+
+```java
+public Object getBean(String name) throws BeansException {
+    return doGetBean(name, null, null, false);
+}
+
+// 返回一个bean的instance，该实例可以是共享的，也可以是独立的
+// 该方法是getOrSet
+protected <T> T doGetBean(final String name, @Nullable final Class<T> requiredType, @Nullable final Object[] args, boolean typeCheckOnly) throws BeansException {
+    // 获取beanName，这里处理两种情况：
+    // 1. FactoryBean（带“&”的）
+    // 2. 根据别名来获取Bean的，在这里会转换最正统的beanName
+    // 如果FactoryBean的话，则把&去掉；否则，根据别名获取真实名称
+    final String beanName = transformedBeanName(name);
+    Object bean;
+
+    // 检查是否已经初始化过
+    Object sharedInstance = getSingleton(beanName);
+    // 如果已经初始化过，且没有传入arg，则代表纯粹的get，直接取出返回即可
+    if (sharedInstance != null && args == null) {
+        // ...
+
+        // 如果是普通bean，直接返回；工厂bean，返回它创建的那个对象
+        bean = getObjectForBeanInstance(sharedInstance, name, beanName, this);
+    } else {
+        // 如果已经存在prototype类型的该bean，则失败
+        if (isPrototypeCurrentlyInCreation(beanName)) {
+            throw new BeanCurrentlyInCreationException(beanName);
+        }
+
+        BeanFactory parentBeanFactory = getParentBeanFactory();
+        // 如果该工厂有父工厂，且当前并没有bean的beanDefition，则委托给父工厂进行实例
+        if (parentBeanFactory != null && !containsBeanDefition(beanName)) {
+            // ...
+        }
+
+        if (!typeCheckOnly) {
+            // 将当前beanName放入一个alreadyCreated的集合中
+            markBeanAsCreated(beanName);
+        }
+
+        // 从此处起，开始创建bean的实例
+        try {
+            final RootBeanDefinition mbd = getMergedLocalBeanDefition(beanName);
+            checkMergedBeanDefition(mbd, beanName, args);
+
+            // 先初始化依赖的所有bean，depend-on中定义的依赖
+            String[] dependsOn = mbd.getDependsOn();
+            if (dependsOn != null) {
+                for (String dep : dependsOn) {
+                    // 检查是否有循环依赖
+                    if (isDependent(beanName, dep)) {
+                        throw new BeanCreationException(mbd.getResourceDescription(), beanName, ...);
+                    }
+                    // 注册依赖关系
+                    registerDependentBean(dep, beanName);
+                    // 先初始化依赖的bean，再往下初始化本bean
+                    getBean(dep);
+                }
+            }
+
+            // 如果<bean>上配置的是单例
+            if (mbd.isSingleton()) {
+                sharedInstance = getSingleton(beanName, () -> {
+                    try {
+                        // 创建bean
+                        return createBean(beanName, mbd, args);
+                    }
+                });
+                bean = getObjectForBeanInstance(sharedInstance, name, beanName, mbd);
+            } else if (mod.isPrototype()) {
+                Object prototypeInstance = null;
+                try {
+                    beforePrototypeCreation(beanName);
+                    // 创建bean
+                    prototypeInstance = createBean(beanName, mbd, args);
+                } finally {
+                    afterPrototypeCreation(beanName);
+                }
+                bean = getObjectForBeanInstance(prototypeInstance, name, beanName, mbd);
+            } else {
+                // 如果不是singleton，也不是prototype，则是自定义的scope，例如web中的session类型，交给自定义scope的应用方法实现
+                String scopeName = mbd.getScope();
+                final Score scope = this.scopes.get(scopeName);
+                if (scope == null) {
+
+                }
+                try {
+                    Object scopedInstance = scope.get(beanName, () -> {
+                        try {
+                            // 创建bean
+                            return createBean(beanName, mbd, args);
+                        } finally {
+                            afterPrototypeCreation(beanName);
+                        }
+                    });
+                    bean = getObjectForBeanInstance(scopedInstance, name, beanName, mbd);
+                } catch (Exception ex) {
+                    // ...
+                }
+            }
+        } catch (BeansException ex) {
+            cleanupAfterBeanCreationFailure(beanName);
+            throw ex;
+        }
+    }
+
+    // 如果指定了requiredType，则检查bean的类型
+    if (requiredType != null && !requiredType.isInstance(bean)) {
+        try {
+            T convertedBean = getTypeConverter().convertIfNecessary(bean, requiredType);
+            if (convertedBean == null) {
+                throw new BeanNotOfRequiredTypeException();
+            }
+            return convertedBean;
+        }
+    }
+    return (T) bean;
+}
+```
+
+以上长方法有两点要注意：
+- getOrSet的思想，获取bean前先判断在不在，存在的话直接返回，不在的话就创建一个bean
+- Spring本身只定义了两种scope：singleton和prototype，而像springmvc的其它scope的实现也是通过这里而来
+
+```java
+protected Object createBean(String beanName, RootBeanDefition mbd) {
+    RootBeanDefinition mbdToUse = mbd;
+
+    // 用于确保beanDefinition中的Class被vm加载
+    Class<?> resolvedClass = resolveBeanClass(mbd, beanName);
+    if (resolvedClass != null && !mbd.hasBeanClass() && mbd.getBeanClassName() != null) {
+        mbdToUse = new RootBeanDefinition(mbd);
+        mbdToUse.setBeanClass(resolvedClass);
+    }
+
+    // 准备方法覆写，如果bean中定义了<lookup-method />和<replaced-method />
+    try {
+        mbdToUse.prepareMethodOverrides();
+    } catch (BeanDefinitionValidationException ex) {
+        throw new BeanDefinitionStoreException("....");
+    }
+
+    try {
+        // 如果有代理的话，直接返回
+        Object bean = resolveBeforeInstantiation(beanName, mbdToUse);
+        if (bean != null) {
+            return bean;
+        }
+    } catch () {}
+
+    try {
+        Object beanInstance = doCreateBean(beanName, mbdToUse, args);
+        return beanInstance;
+    } catch () {}
+}
+
+protected Object doCreateBean(final String beanName, final RootBeanDefinition mbd, final @Nullable Object[] args) {
+
 }
 ```
 
@@ -449,6 +653,9 @@ public void preInstantiateSingletons() throws BeansException {
 
 4. 继续啃beanDefinition的读取过程（已完成）
  -->
+
+
+<!-- 周日进度：在找寻beanPostProcessor的方法调用，doCreateBean还没看完 -->
 
  # 参考
  - [历时三个月，史上最详细的Spring注解驱动开发系列教程终于出炉了，给你全新震撼](https://liayun.blog.csdn.net/article/details/115053350)
