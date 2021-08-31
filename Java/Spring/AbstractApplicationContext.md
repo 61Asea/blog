@@ -299,7 +299,7 @@ BeanFactoryPostProcessor：由ApplicationContext管理，在bean**实例化**前
 
 BeanPostProcessor：由BeanFactory管理，在bean**初始化的前与后**调用执行
 
-6. registerBeanPostProcessors(ConfigurableListableBeanFactory beanFactory)
+6.** registerBeanPostProcessors(ConfigurableListableBeanFactory beanFactory)
 
 ```java
 protected void registerBeanPostProcessors() {
@@ -323,11 +323,11 @@ private static void registerBeanPostProcessors(ConfigurableListableBeanFactory b
 }
 ```
 
-7. initMessageSourece()
+**7.** initMessageSourece()
 
 作用：初始化当前ApplicationContext的`MessageSource`，这部分涉及`国际化`
 
-8. initApplicationEventMulticaster()
+**8.** initApplicationEventMulticaster()
 
 作用：初始化当前ApplicationContext的`事件广播器`，默认为`时间事件广播器`
 
@@ -348,9 +348,9 @@ protected void initApplicationEventMulticaster() {
 }
 ```
 
-9. onRefresh()
+**9.** onRefresh()
 
-10. registerListeners()
+**10.** registerListeners()
 
 作用：往`事件广播器`中注册`事件监听器`
 
@@ -384,7 +384,7 @@ protect void registerListeners() {
 }
 ```
 
-11. finishBeanFactoryInitialization(ConfigurableListableBeanFactory beanFactory)
+**11.** finishBeanFactoryInitialization(ConfigurableListableBeanFactory beanFactory)
 
 作用：bean的`初始化`，负责初始化所有没有设置懒加载的`singleton bean`
 
@@ -470,6 +470,8 @@ public void preInstantiateSingletons() throws BeansException {
     }
 }
 ```
+
+> [spring bean parent属性详解](https://www.cnblogs.com/caoyc/p/5622986.html)：某些bean会作为其他bean的父类，起模板/父类的作用，子类bean会继承父类的一切bean属性，所以在代码中通过`getMergedLocalBeanDefinition()`方法为子类bean合并上父bean的属性，保证正确性
 
 无论bean是否属于工厂，都会调用`getBean(String beanName)`方法，该方法将对bean进行`实例化`：
 
