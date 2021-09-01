@@ -65,7 +65,9 @@ public abstract class AbstractApplicationContext extends DefaultResourceLoader i
 
 > ApplicationContext容器面向用户，其中beanFactory面向Spring应用内部，用户正常使用下不需要调用beanFactory接口
 
-# **1.2 Bean工厂**
+## **1.2 Bean工厂**
+
+### **1.2.1 AbstractBeanFactory**
 
 从上层的`AbstractBeanFactory`开始看起，其为subclass提供了以下重要功能：
 
@@ -78,7 +80,25 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
     private final Set<String> alreadyCreated = Collections.newSetFromMap(new ConcurrentHashMap(256));
 
     protected <T> T doGetBean(final String name, @Nullable final Class<T> requireedType, @Nullable final Object[] args, boolean typeCheckOnly) throws BeansException {
+        final String beanName = transformedBeanName(name);
+        Object bean;
 
+        Object sharedInstance = getSingleton(beanName);
+        if (sharedInstance != null && args == null) {
+            // ...
+            bean = getObjectForBeanInstance(sharedInstance, name, beanName, null);
+        } else {
+            // 在这里进入更里层的创建，createBean完成后，会将完成品bean放到第一级缓存中，并从第二、三级缓存移除
+            sharedInstance = getSingleton(beanName, () -> {
+                try {
+                    return createBean(beanName, mbd, args);
+                } catch (...) {
+                    destroySingleton(beanName);
+                }
+                // 注意ObjectFactory和FactoryBean的区别，前者结合二级缓存用于解决循环依赖AOP代理对象的问题，后者是一种bean的思想
+                bean = getObjectForBeanInstance(sharedInstance, name, beanName, mbd);
+            });
+        }
     }
 
     protected RootBeanDefinition getMergedLocalBeanDefinition(String beanName) throws BeansException {
@@ -109,9 +129,9 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 
         private final Set<String> registeredSingletons = new LinkedHashSet<>(256);
 
-        // 运用三级缓存来获取bean实例
         protected Object getSingleton(String beanName, boolean allowEarlyReference) {
-
+            // 运用三级缓存来获取bean实例
+            // 在第三级缓存获得工厂bean对象后，会调用其getObject()方法，并将生成的对象上升到第二级缓存后返回
         }
     }
     ```
@@ -131,14 +151,122 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 
     > 创建单例的调用链：AbstractBeanFactory.doGetBean() -> AbstractAutowireCapableBeanFactory.createBean() -> `AbstractAutowireCapableBeanFactory.doCreateBean()`
 
-```java
-public class DefaultListableBeanFactory extends AbstractAutowireCapableBeanFactory implements ConfigurableListableBeanFactory, BeanDefinitionRegistry, Serializable {
+### **1.2.2 AbstractAutowireCapableBeanFactory**
 
+`AbstractAutowireCapableBeanFactory`提供了`createBean`和`doCreateBean`方法，后者涉及到了bean的三个重要阶段：
+- 实例化：createBeanInstance(beanName, mbd, args)
+- 注入属性：populateBean(beanName, mbd, instanceWrapper)
+- 初始化：initializeBean(beanName, exposedObject, mbd)
+
+```java
+public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFactory implements AutowireCapableBeanFactory {
+    protected Object createBean(String beanName, RootBeanDefinition mbd, @Nullable Object[] args) throws BeanCreationException {
+        // ...
+        try {
+            Object beanInstance = doCreateBean(beanName, mbdToUse, args);
+            if (logger.isDebugEnabled()) {
+                logger.debug("Finished creating instance of bean '" + beanName + "'");
+            }
+            return beanInstance;
+        } catch (...) {
+            // ...
+        }
+        // ...
+    }
+
+    protected Object doCreateBean(final String beanName, final RootBeanDefinition mbd, final @Nullable Object[] args) throws BeanCreationException {
+        BeanWrapper instanceWrapper = null;
+        if (mbd.isSingleton()) {
+			instanceWrapper = this.factoryBeanInstanceCache.remove(beanName);
+		}
+        // 1. 实例化bean
+        if (instanceWrapper == null) {
+            instanceWrapper = creatBeanInstance(beanName, mbd, args);
+        }
+
+        // ...
+
+        boolean earlySingletonExposure = (mbd.isSingleton() && this.allowCircularReferences && isSingletonCurrentlyInCreation(beanName));
+        if (earlySingletonExposure) {
+            // 将半成品的bean提前暴露，添加到第三级缓存中，以解决循环依赖的问题
+            addSingletonFactory(beanName, () -> getEarlyBeanReference(beanName, mbd, bean));
+        }
+
+        Object exposedObject = bean;
+        try {
+            // 2. 注入属性，这个过程可能进行循环依赖的注入
+            populateBean(beanName, mbd, instanceWrapper);
+
+            // 3. 初始化bean，这个过程可能因为BeanPostProcessor返回新引用，而替换掉旧的引用（旧引用已经存在缓存中）
+            exposedObject = initializeBean(beanName, exposedObject, mbd)l
+        } catch (Throwable ex) {
+            // ...
+        }
+
+        if (earlySingletonExposure) {
+            Object earlySingletonReference = getSingleton(beanName, false);
+            if (earlySingletonReference != null) {
+                // 判断是否在initializeBean中返回的引用已被替换，是的话则出现问题，因为代理对象应该提前替换，否则会导致其他被依赖注入的对象出现对象不一致情况
+
+                // 所以，beanPostProcessor应该覆写getEarlySingletonReference()方法
+                if (exposedObject == bean) {
+                    // 代理对象已经在早期被替换为代理对象并存入二级缓存，这里要从二级缓存中取出
+                    exposedObject = earlySingletonReference;
+                } else if (!this.allowRawInjectionDespiteWrapping && hasDependentBean(beanName)) {
+                    // 出现了多例循环依赖问题
+                }
+            }
+        }
+
+        // ...
+        return exposedObject;
+    }
 }
 ```
 
-文章进度:
-1. 继续补充AbstractAutowireCapableBeanFactory，DefaultListableBeanFactory的属性讲解
+### **1.2.3 DefaultListableBeanFactory**
+
+`DefaultListableBeanFactory`是AbstractAutowireCapatableBeanFactory的子类，提供具体实现给到AbstractApplicationContext#Refresh#`finishBeanFactoryInitialization()`上，作为一个桥接
+
+```java
+public class DefaultListableBeanFactory extends AbstractAutowireCapableBeanFactory implements ConfigurableListableBeanFactory, BeanDefinitionRegistry, Serializable {
+    public void preInstantiateSingletons() throws BeansException {
+        // ...
+        getBean(beanName);
+    }
+}
+```
+
+至此，创建bean的调用链变成：
+
+AbstractApplication.refresh()#finishBeanFactoryInitialization() 
+-> 
+DefaultListableBeanFactory.preInstantiateSingletons()#getBean()
+-> 
+AbstractBeanFactory.doGetBean() 
+-> 
+AbstractAutowireCapableBeanFactory.createBean() 
+-> 
+AbstractAutowireCapableBeanFactory.doCreateBean()
+
+# **2. Bean的生命周期**
+
+共有4个阶段（加上beanDefinition的加载算5个阶段）
+- 实例化：instantiation
+- 属性注入：populate
+- 初始化：initialization
+- 销毁：Destruction
+
+## **BeanDefinition加载**
+
+
+
+## **2.1 实例化**
+
+
+
+<!-- 文章进度:
+1. 继续补充AbstractAutowireCapableBeanFactory，DefaultListableBeanFactory的属性讲解（已完成）
 
 2. 将AbstractApplicationContext文章进行删减，只保留refresh()方法的内容，并着重讲解创建单例的调用链，即尾节点doCreateBean方法
 
@@ -146,7 +274,7 @@ public class DefaultListableBeanFactory extends AbstractAutowireCapableBeanFacto
 
 4. 循环依赖的问题和实现细节，整个流程，以及能ioc能解决的循环依赖问题总结，放在AbstractApplicationContext文章
 
-5. AbstractApplicationContext文章改名为bean加载过程，或者直接嵌入到IOC文章中（待定）
+5. AbstractApplicationContext文章改名为bean加载过程，或者直接嵌入到IOC文章中（待定） -->
 
 # 参考
 - [IOC和DI是什么](https://www.iteye.com/blog/jinnianshilongnian-1413846?page=2#comments)

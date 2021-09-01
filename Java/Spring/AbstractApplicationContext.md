@@ -1,4 +1,4 @@
-# AbstractApplicationContext
+# AbstractApplicationContext.refresh()
 
 ```java
 public interface ConfigurableApplicationContext extends ApplicationContext, LifeCycle, Closeable {
@@ -14,29 +14,38 @@ public abstract class AbstractApplication extends DefaultResourceLoader implemen
             // 1. 初始化spring上下文（如活跃、启动时间），并进行对必须有的参数进行非空校验
             prepareRefresh();
 
-            // 2. 创建beanFactory
+            // 2. 创建beanFactory，负责Bean定义的加载和注册
             ConfigurableListableBeanFactory beanFactory = obtainFreshBeanFactory();
 
-            // 3. 
+            // 3. 设置beanFactory的类加载器，添加几个BeanPostProcessor，手动注册几个特殊的bean
             prepareBeanFactory(beanFactory);
 
             try {
+                // 4. 扩展点1，可以在此处新增特殊的BeanPostProcessor
                 postProcessBeanFactory(beanFactory);
 
+                // 5. 传入beanFactory，调用每一个beanFactoryPostProcessor，可能会添加一些特殊的beanPostProcessor到beanFactory中，也有可能修改beanFactory中一些bean的定义
                 invokeBeanFactoryPostProcessors(beanFactory);
 
+                // 6. 从bean定义中，取出BeanPostProcessor类型的，并对它们进行实例化（getBean），并添加到beanPostProcessors列表中
                 registerBeanPostProcessors(beanFactory);
 
+                // 7. 初始化当前ApplicationContext的`MessageSource`，这部分涉及Spring国际化功能
                 initMessageSource();
 
+                // 8. 初始化当前ApplicationContext的`事件广播器`，默认为`时间事件广播器`
                 initApplicationEventMulticaster();
 
+                // 9. 扩展点2
                 onRefresh();
 
+                // 10. 往`事件广播器`中注册`事件监听器`
                 registerListeners();
 
+                // 11. 正式开始加载其他的业务bean，涉及到bean的生命周期
                 finishBeanFactoryInitialization(beanFactory);
 
+                // 12. 
                 finishRefresh();
             } catch (BeansException ex) {
                 if (logger.isWarnEnabled()) {
@@ -57,7 +66,7 @@ public abstract class AbstractApplication extends DefaultResourceLoader implemen
 }
 ```
 
-1. prepareRefresh()
+# 1. prepareRefresh()
 
 ```java
 protected void prepareRefresh() {
@@ -85,7 +94,7 @@ protected void prepareRefresh() {
 }
 ```
 
-2. obtainFreshBeanFactory()
+# 2. obtainFreshBeanFactory()
 
 作用：负责BeanFactory的初始化，Bean的加载和注册
 
@@ -195,7 +204,7 @@ refreshBeanFactory方法由AbstractApplicationContext的子类实现：
     }
     ```
 
-3. prepareBeanFactory(beanFactory)
+# 3. prepareBeanFactory(beanFactory)
 
 作用：设置beanFactory的类加载器，添加几个BeanPostProcessor，手动注册几个特殊的bean
 
@@ -250,7 +259,7 @@ protected void prepareBeanFactory(ConfigurableListableBeanFactory beanFactory) {
 }
 ```
 
-4. postProcessBeanFactory(beanFactory)
+# 4. postProcessBeanFactory(beanFactory)
 
 ```java
 /**
@@ -265,7 +274,7 @@ protected void postProcessBeanFactory(ConfigurableListableBeanFactory beanFactor
 
 作用：不同的上下文对象可以在这一步中注册一些特殊的beanPostProcessor
 
-5. invokeBeanFactoryPostProcessors()
+# 5. invokeBeanFactoryPostProcessors()
 
 ```java
 protected void invokeBeanFactoryPostProcessors(ConfigurableListableBeanFactory beanFactory) {
@@ -299,7 +308,7 @@ BeanFactoryPostProcessor：由ApplicationContext管理，在bean**实例化**前
 
 BeanPostProcessor：由BeanFactory管理，在bean**初始化的前与后**调用执行
 
-6.** registerBeanPostProcessors(ConfigurableListableBeanFactory beanFactory)
+# 6.** registerBeanPostProcessors(ConfigurableListableBeanFactory beanFactory)
 
 ```java
 protected void registerBeanPostProcessors() {
@@ -323,11 +332,11 @@ private static void registerBeanPostProcessors(ConfigurableListableBeanFactory b
 }
 ```
 
-**7.** initMessageSourece()
+# **7.** initMessageSourece()
 
 作用：初始化当前ApplicationContext的`MessageSource`，这部分涉及`国际化`
 
-**8.** initApplicationEventMulticaster()
+# **8.** initApplicationEventMulticaster()
 
 作用：初始化当前ApplicationContext的`事件广播器`，默认为`时间事件广播器`
 
@@ -348,9 +357,9 @@ protected void initApplicationEventMulticaster() {
 }
 ```
 
-**9.** onRefresh()
+# **9.** onRefresh()
 
-**10.** registerListeners()
+# **10.** registerListeners()
 
 作用：往`事件广播器`中注册`事件监听器`
 
@@ -384,7 +393,7 @@ protect void registerListeners() {
 }
 ```
 
-**11.** finishBeanFactoryInitialization(ConfigurableListableBeanFactory beanFactory)
+# **11.** finishBeanFactoryInitialization(ConfigurableListableBeanFactory beanFactory)
 
 作用：bean的`初始化`，负责初始化所有没有设置懒加载的`singleton bean`
 
@@ -524,7 +533,7 @@ protected <T> T doGetBean(final String name, @Nullable final Class<T> requiredTy
             String[] dependsOn = mbd.getDependsOn();
             if (dependsOn != null) {
                 for (String dep : dependsOn) {
-                    // 检查是否有循环依赖
+                    // 检查bean配置中，已经填写了depend-on属性的bean，它们是否有循环依赖
                     if (isDependent(beanName, dep)) {
                         throw new BeanCreationException(mbd.getResourceDescription(), beanName, ...);
                     }
@@ -632,11 +641,11 @@ protected Object createBean(String beanName, RootBeanDefition mbd) {
 }
 
 protected Object doCreateBean(final String beanName, final RootBeanDefinition mbd, final @Nullable Object[] args) {
-
+    
 }
 ```
 
-# 进度
+<!-- # 进度 -->
 
 <!-- 
 8月28日进度：今天看了bean的xml解析，以及注册到map中的过程，其中包括了并发问题的；还有初步认识了beanFactoryPostProcessor的概念
@@ -668,3 +677,4 @@ protected Object doCreateBean(final String beanName, final RootBeanDefinition mb
  # 重点参考
  - [为什么在注册bean的时候要synchronized](https://www.cnblogs.com/daimzh/p/12854414.html)
  - [Spring的BeanFactoryPostProcessor和BeanPostProcessor](https://blog.csdn.net/caihaijiang/article/details/35552859)
+ - [方法isDependent分析-初始化bean-Spring源码](https://www.jianshu.com/p/af496b2a9f89)
