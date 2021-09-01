@@ -14,7 +14,7 @@
 
 ![应用上下文与bean工厂的关系](https://asea-cch.life/upload/2021/08/%E5%BA%94%E7%94%A8%E4%B8%8A%E4%B8%8B%E6%96%87%E4%B8%8Ebean%E5%B7%A5%E5%8E%82%E7%9A%84%E5%85%B3%E7%B3%BB-bd33916c406d465892bc8d242fd8d7d5.png)
 
-## **1.1 应用上下文**
+## **1.1 容器（应用上下文）**
 
 `ApplicationContext`，又称为应用上下文，作为IOC容器，其关键容器抽象类`AbstractApplicationContext`提供容器加载最重要的方法`refresh()`与以下重要组件：
 - 父容器
@@ -95,9 +95,9 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
                 } catch (...) {
                     destroySingleton(beanName);
                 }
-                // 注意ObjectFactory和FactoryBean的区别，前者结合二级缓存用于解决循环依赖AOP代理对象的问题，后者是一种bean的思想
-                bean = getObjectForBeanInstance(sharedInstance, name, beanName, mbd);
             });
+            // 注意ObjectFactory和FactoryBean的区别，前者结合二级缓存用于解决循环依赖AOP代理对象的问题，后者是一种bean的思想
+            bean = getObjectForBeanInstance(sharedInstance, name, beanName, mbd);
         }
     }
 
@@ -249,7 +249,225 @@ AbstractAutowireCapableBeanFactory.createBean()
 -> 
 AbstractAutowireCapableBeanFactory.doCreateBean()
 
-# **2. Bean的生命周期**
+## **1.3 容器生命周期**
+
+`Lifecycle`接口和`LifeCycleProcessor`接口：
+
+```java
+public interface Lifecycle {
+    void start();
+    
+    void stop();
+
+    boolean isRunning();
+}
+
+public interface LifeCycleProcessor extends LifeCycle {
+    // 通知上下文进行refresh操作
+    void onRefresh();
+
+    // 通知上下文关闭
+    void onClose();
+}
+```
+
+`LifecycleProcessor`：负责管理ApplicationContext的生命周期，包括：开启/刷新/是否运行中/关闭
+
+### **1.3.1 生命周期管理器的初始化**
+
+在refresh()#finishRefresh()方法中初始化，默认使用`DefaultLifecycleProcessor`，如果用户有自定义则使用用户注入的管理器bean：
+```java
+public abstract class AbstractApplicationContext {
+    // 管理容器的生命周期，主要处理容器关闭时对bean的管理
+    private LifeCycleProcessor lifeCycleProcessor;
+
+    protected void finishRefresh() {
+        // ...
+
+        // 初始化容器生命周期管理器
+        initLifecycleProcessor();
+
+        // 优先传播refresh到lifeCycleProcessor
+        getLifeCycleProcessor().onRefresh();
+
+        // ...
+    }
+
+    protected void initLifecycleProcessor() {
+        ConfigurableListableBeanFactory beanFactory = getBeanFactory();
+        // LIFECYCLE_PROCESSOR_BEAN_NAME = "lifecycleProcessor"
+        if (beanFactory.containsLocalBean(LIFECYCLE_PROCESSOR_BEAN_NAME)) {
+            // 加载用户自定义lifecycleProcessor的bean实例
+            this.lifecycleProcessor = beanFactory.getBean(LIFECYCLE_PROCESSOR_BEAN_NAME, LifecycleProcessor.class);
+        } else {
+            DefaultLifecycleProcessor defaultProcessor = new DefaultLifecycleProcessor();
+            defaultProcessor.setBeanFactory(beanFactory);
+            // 需要通过调用beanFactory的注册接口进行注册
+            beanFactory.registerSingleton(LIFECYCLE_PROCESSOR_BEAN_NAME, this.lifecycleProcessor);
+        }
+    }
+}
+```
+
+### **1.3.2 默认生命管理器**
+
+`DefaultLifecycleProcessor`：负责所有的LifecycleProcessor实现执行，是所有的LifeCycleProcessor的代理对象
+
+```java
+public class DefaultLifecycleProcessor implements LifecycleProcessor {
+    @Override
+    public void onRefresh() {
+        startBeans(true);
+        this.running = true;
+    }
+
+    @Override
+    public void onClose() {
+        stopBeans();
+        this.running = false;
+    }
+}
+```
+
+#### **onRefresh()**
+
+onRefresh调用的是`startBeans(boolean autoStartupOnly)`方法，参数代表是否只加载SmartLifecycle类型的管理器则：
+
+```java
+private void startBeans(boolean autoStartupOnly) {
+    // 通过beanFactory获取全部类型为LifeCycle的bean
+    Map<String, Lifecycle> lifecycleBeans = getLifecycleBeans();
+    // 相同phase的lifeProcessor处于同一组中
+    Map<Integer, LifecycleGroup> phases = new HashMap<>();
+    lifecycleBeans.forEach((beanName, bean) -> {
+        if (!autoStartupOnly || (bean instanceof SmartLifecycle && ((SmartLifecycle) bean).isAutoStartup())) {
+            // 将相同phase的放到同一个LifecycleGroup中的逻辑
+        }
+    });
+
+    if (!phases.isEmpty()) {
+        List<Integer> keys = new ArrayList<>(phases.keySet());
+        Collections.sort(keys);
+        for (Integer key : keys) {
+            // 升序调用某个LifecycleGroup的全部lifeProcessor的doStart()方法
+            phases.get(key).start();
+        }
+    }
+}
+```
+
+> 到最后会发现调用的是所有的LifecycleProcessor的start()实现，这应该算是一个扩展点
+
+#### **onClose()**
+
+```java
+private void stopBeans() {
+    Map<String, Lifecycle> lifecycleBeans = getLifecycleBeans();
+    Map<Integer, LifecycleGroup> phases = new HashMap<>();
+    lifecycleBeans.forEach((beanName, bean) -> {
+        int shutdownOrder = getPhase(bean);
+        LifecycleGroup group = phases.get(shutdownOrder);
+        if (group == null) {
+            group = new LifecycleGroup(shutdownOrder, this.timeoutPerShutdownPhase, lifecycleBeans, false);
+            phases.put(shutdownOrder, group);
+        }
+        group.add(beanName, bean);
+    });
+    if (!phases.isEmpty()) {
+        List<Integer> keys = new ArrayList<>(phases.keySet());
+        Collections.sort(keys, Collections.reverseOrder());
+        for (Integer key : keys) {
+            phases.get(key).stop();
+        }
+    }
+}
+```
+
+与onRefresh一样的套路，根据phase分组，并按照phase升序调用所有lifecycleProcessor的stop方法
+
+### **1.3.3 调用管理方法的入口**
+
+onRefresh：AbstractBeanFactory#refresh()#finishRefresh()
+
+    ```java
+    protected void finishRefresh {
+        // ...
+        getLifecycleProcessor().onRefresh();
+    }
+    ```
+
+onClose：
+
+# **2. Bean**
+
+## **2.1 Bean的类型**
+
+> [Spring BeanFactory和FactoryBean的区别](https://www.jianshu.com/p/05c909c9beb0)
+
+Spring为我们提供了两种类型的bean，一种是`普通bean`，我们通过`getBean(id)`方法获得该bean的实际类型；另一种是`FactoryBean`，我们通过`getBean(id)`方法获得该工厂生产的bean，而不是该FactoryBean的实例
+
+`FactoryBean`：通过工厂思想去产生s新的object（bean），如果一个bean实现了该接口，那么它将被当作一个`对象的工厂`。FactoryBean本身是一个bean，但它不能被当作一个正常bean实例来使用（不能直接作为一个bean实例来公开自己）
+
+> 通常情况下，bean无须自己实现工厂模式，Spring容器担任工厂角色；但少数情况下，容器中的bean本身就是工厂，作用是产生其它bean实例。由FactoryBean产生的其它bean实例，不再由Spring容器产生，因此与普通bean的配置不同，无须配置class属性
+
+```java
+public interface FactoryBean<T> {
+    @Nullable
+    T getObject() throws Exception;
+
+    @Nullable
+    Class<?> getObjectType();
+
+    default boolean isSingleton() {
+        return true;
+    }
+}
+```
+
+结合`doGetBean#getObjectForBeanInstance()`方法，创建出来的bean实例可能是工厂Bean，需要由其再进一步进行生产：
+
+```java
+// AbstractBeanFactory.class
+protected <T> T doGetBean() {
+    sharedInstance = getSingleton(beanName, () -> {
+        try {
+            return createBean(beanName, mbd, args);
+        } catch (...) {
+            destroySingleton(beanName);
+        }
+    });
+
+    // 注意ObjectFactory和FactoryBean的区别，前者结合二级缓存用于解决循环依赖AOP代理对象的问题，后者是一种bean的思想
+    bean = getObjectForBeanInstance(sharedInstance, name, beanName, mbd);
+}
+
+// FactoryBeanRegistrySupport.class
+protected Object getObjectFromFactoryBean(Factory<?> factory, String beanName, boolean shouldPostProcess) {
+    // ...
+    object = doGetObjectFromFactoryBean(factory, beanName);
+}
+
+// FactoryBeanRegistrySupport.class
+private Object doGetObjectFromFactoryBean(final FactoryBean<?> factory, final String beanName) {
+    // ...
+
+    // 调用FactoryBean的接口，由工厂bean生成最后的bean
+    object = factory.getObject();
+}
+```
+
+从这里可以看出一个bean在容器中的缓存是如何存储的：
+
+1. 从一级缓存`singletonObjects`中查找，返回beanName对于的bean实例
+2. 判断该bean实例是否为工厂Bean，是的话跳转到第三步，否则直接返回
+3. 判断该工厂Bean是否为单例
+    - 是，直接从工厂bean实例缓存-`factoryBeanObjectCache`中查找
+        - 找得到，直接返回
+        - 找不到，跳转到第4步
+    - 否，跳转到第4步
+4. 通过该工厂Bean创建bean实例（如果是单例bean则加入到`factoryBeanObjectCache`），最后返回生成的bean实例
+
+## **2.2 Bean生命周期**
 
 共有4个阶段（加上beanDefinition的加载算5个阶段）
 - 实例化：instantiation
@@ -257,12 +475,41 @@ AbstractAutowireCapableBeanFactory.doCreateBean()
 - 初始化：initialization
 - 销毁：Destruction
 
-## **BeanDefinition加载**
+加上最重要的两个扩展接口；
+- InstantationAwareBeanPostProcessor：用于bean的实例化前后
+- BeanPostProcessor：用于bean的初始化前后
 
+### **BeanDefinition加载**
 
+在`AbstractApplicationContext`#`refresh()`#`obtainBeanFactory()`方法中加载bean的定义，不同类型的上下文的加载方式不同：
 
-## **2.1 实例化**
+- AbstractRefreshableApplicationContext：对应Xml中的配置，读取全部bean标签属性来获取definition
 
+- GenericApplication：对应Scanner，通过扫描某个包路径下的class文件，以反射的方式来获取definition
+
+### **2.2.1 实例化**
+
+```java
+// AbstractAutowireCapableBeanFactory.class
+protected Object doCreateBean() {
+    // ...
+
+    instanceWrapper = createBeanInstance(beanName, mbd, args);
+}
+```
+
+> 该阶段的bean刚实例化出来，其属性仍为空值
+
+在实例化阶段前后，共有两次机会对bean进行扩展，其中涉及到`InstantationAwareBeanPostProcessor`
+
+```java
+```
+
+### **2.2.1 属性注入**
+
+### **2.2.3 初始化**
+
+### **2.2.4 销毁**
 
 
 <!-- 文章进度:
