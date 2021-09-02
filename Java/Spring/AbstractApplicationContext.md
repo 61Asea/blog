@@ -1,5 +1,7 @@
 # AbstractApplicationContext.refresh()
 
+> 本篇只做源码的笔记使用
+
 ```java
 public interface ConfigurableApplicationContext extends ApplicationContext, LifeCycle, Closeable {
     // 关键方法，无论是ClassPathXmlApplicationContext，还是AnnotationConfigApplicationContext(GenericApplicationContext)，都会调用该方法对Spring进行初始化
