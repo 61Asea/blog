@@ -469,48 +469,43 @@ private Object doGetObjectFromFactoryBean(final FactoryBean<?> factory, final St
 
 ## **2.2 Bean生命周期**
 
+### **BeanDefinition加载**
+
+调用栈：在`AbstractApplicationContext`#`refresh()`#`obtainBeanFactory()`方法中加载bean的定义，不同类型的上下文的加载方式不同
+- AbstractRefreshableApplicationContext：对应Xml中的配置，读取全部bean标签属性来获取definition
+
+- GenericApplication：对应Scanner，通过扫描某个包路径下的class文件，以反射的方式来获取definition
+
+调用时机：初始化beanFactory的过程
+
+### **BeanFactoryPostProcessor**
+
+调用栈：AbstractApplicationContext#refresh()#`invokeBeanFactoryPostProcessors()`
+
+调用时机：beanFactory初始化完成，即bean定义加载之后
+
+### **getBean()**
+
+加上最重要的三个扩展接口：
+- InstantationAwareBeanPostProcessor：用于bean的实例化前后
+    - postProcessBeforeInstantiation
+    - postProcessAfterInstantiation
+    - postProcessPropertyValues
+- BeanNameAware：用于bean的init-method调用之前
+- BeanFactoryAware：用于bean的init-method调用之前
+- BeanPostProcessor：用于bean的初始化前后
+    - postProcessBeforeInitialization
+    - postProcessAfterInitialization
+- DisposableBean：用于销毁
+
 共有4个阶段（加上beanDefinition的加载算5个阶段）
 - 实例化：instantiation
 - 属性注入：populate
 - 初始化：initialization
 - 销毁：Destruction
 
-加上最重要的两个扩展接口；
-- InstantationAwareBeanPostProcessor：用于bean的实例化前后
-- BeanPostProcessor：用于bean的初始化前后
-
-### **BeanDefinition加载**
-
-在`AbstractApplicationContext`#`refresh()`#`obtainBeanFactory()`方法中加载bean的定义，不同类型的上下文的加载方式不同：
-
-- AbstractRefreshableApplicationContext：对应Xml中的配置，读取全部bean标签属性来获取definition
-
-- GenericApplication：对应Scanner，通过扫描某个包路径下的class文件，以反射的方式来获取definition
-
-### **2.2.1 实例化**
-
-```java
-// AbstractAutowireCapableBeanFactory.class
-protected Object doCreateBean() {
-    // ...
-
-    instanceWrapper = createBeanInstance(beanName, mbd, args);
-}
-```
-
-> 该阶段的bean刚实例化出来，其属性仍为空值
-
-在实例化阶段前后，共有两次机会对bean进行扩展，其中涉及到`InstantationAwareBeanPostProcessor`
-
-```java
-```
-
-### **2.2.1 属性注入**
-
-### **2.2.3 初始化**
-
-### **2.2.4 销毁**
-
+更详细的版本可看：
+> [bean生命周期](https://asea-cch.life/achrives/beanlifecycle)
 
 <!-- 文章进度:
 1. 继续补充AbstractAutowireCapableBeanFactory，DefaultListableBeanFactory的属性讲解（已完成）
