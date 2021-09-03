@@ -1,2 +1,193 @@
 # Spring：AnnotationApplicationContext
 
+在了解容器的初始化过程（bean生命周期），我们可以结合`ClassPathXmlApplicationContext`的装载机制，思考Spring是如何基于注解来初始化bean
+
+![xml和注解上下文的关系图](https://asea-cch.life/upload/2021/09/xml%E5%92%8C%E6%B3%A8%E8%A7%A3%E4%B8%8A%E4%B8%8B%E6%96%87%E7%9A%84%E5%85%B3%E7%B3%BB%E5%9B%BE-f86da040fc7246a9b0f144314b93773b.png)
+
+以`xml`和`annotation`两种方式做对比，结论：
+主要差异只在**加载bean定义**的过程不同，其余类似
+
+## **xml**
+
+```java
+// ClassPathXmlApplicationContext构造器
+public ClassPathXmlApplicationContext(
+        String[] configLocations, boolean refresh, @Nullable ApplicationContext parent)
+        throws BeansException {
+
+    super(parent);
+    setConfigLocations(configLocations);
+    if (refresh) {
+        // 在此刻还未读取配置
+        refresh();
+    }
+}
+```
+
+时机：
+
+> 都在调用refresh()方法之后
+
+- 读取xml配置
+
+    AbstractXmlApplicationContext#loadBeanDefinitions()方法，创建一个`XmlBeanDefinitionReader`
+    
+    该Reader转而再创建一个`DefaultBeanDefinitionDocumentReader`，并调用`parseBeanDefinitions()`方法从根节点开始读取配置
+
+- 从读取的xml配置中加载BeanDefinition
+
+    在DefaultBeanDefinitionDocumentReader#parseBeanDefinitions()方法调用后，为每一个配置创建一个beanDefinition
+
+- 设置配置的属性到Bean定义中
+
+    与上面同时进行
+
+- BeanDefinition加载到工厂中的Map
+
+    调用AbstractApplicationContext#refresh()方法后
+
+调用栈：AbstractApplicationContext#`refresh()`#`obtainRefreshBeanFactory()`#`refreshBeanFactory()`#`createBeanFactory()`#`loadBeanDefinitions()`
+
+关键的方法：
+
+```java
+// BeanDefinitionReaderUtils.class
+protected void processBeanDefinition(Element, ele, BeanDefinitionParserDelegate delegate) {
+    // 1. 取bean标签中的数据，如：scope/id/name/class/parent/lazy-init等数据值，并设置到definition中
+    BeanDefinition bdHolder = delegate.parseBeanDefinitionElement(ele);
+    if (bdHolder != null) {
+        bdHolder = delegate.docorateBeanDefinitionIfRequired(ele, bdHolder);
+        try {
+            // 2. 将beandefinition注册到beanFactory中
+            BeanDefinitionReaderUtils.registerBeanDefinition(bdHolder, getReaderContext().getRegistry());
+        } catch (...) {
+            // ...
+        }
+        // ...
+    }
+}
+```
+
+## **Annotation**
+
+```java
+// AnnotationConfigApplicationContext.class
+public AnnotationConfigApplicationContext(String ...basePackages) {
+    this();
+    // 可以发现，在refresh就调用了scan方法
+    scan(basePackages);
+    refresh();
+}
+```
+
+时机：
+
+> 分为调用`refresh()`的前与后
+
+- 读取类信息
+
+    `ClassPathScanningCandidateComponentProvider#scanCandidateComponents()`方法中，会根据包路径来获得Resource对象
+
+    根据Resource对象，使用`MetadataReader`来初始化一个`ClassReader`，通过后者读取类中所有的注解信息
+
+    > 注意，会使用AnnotationTypeFilter对类进行筛选，主要筛选非Component
+
+- 从读取的类信息中加载BeanDefinition
+
+    在上一步完成后，会将信息暂且存放在`ScannedGenericBeanDefinition`中，并返回到最上层的`doScan()`方法
+
+- 设置配置的属性到Bean定义中
+
+    在`doScan()`方法里得到ScannedGenericBeanDefinition集合后，设置beanDefinition的值
+
+- BeanDefinition加载到工厂中的Map
+
+    同样在`doScan()`中，处于最后的操作
+
+
+```java
+// ClassPathBeanDefinitionScanner.class
+protected Set<BeanDefinitionHolder> doScan(String... basePackages) {
+    Assert.notEmpty(basePackages, "At least one base package must be specified");
+    Set<BeanDefinitionHolder> beanDefinitions = new LinkedHashSet<>();
+    for (String basePackage : basePackages) {
+        // 使用ClassReader读取全部注解信息，并返回ScannedGenericBeanDefinition集合
+        Set<BeanDefinition> candidates = findCandidateComponents(basePackage);
+        for (BeanDefinition candidate : candidates) {
+            ScopeMetadata scopeMetadata = this.scopeMetadataResolver.resolveScopeMetadata(candidate);
+            // 设置definition的scope属性
+            candidate.setScope(scopeMetadata.getScopeName());
+            // 注意，这里可以配置读取配置的@Name属性来获取自定义的beanName
+            String beanName = this.beanNameGenerator.generateBeanName(candidate, this.registry);
+            if (candidate instanceof AbstractBeanDefinition) {
+                // 设置autowire-candidate属性到定义中
+                postProcessBeanDefinition((AbstractBeanDefinition) candidate, beanName);
+            }
+            if (candidate instanceof AnnotatedBeanDefinition) {
+                // 设置属性到bean定义中，如：lazy-init/primary/deponds-on/role
+                AnnotationConfigUtils.processCommonDefinitionAnnotations((AnnotatedBeanDefinition) candidate);
+            }
+            if (checkCandidate(beanName, candidate)) {
+                BeanDefinitionHolder definitionHolder = new BeanDefinitionHolder(candidate, beanName);
+                definitionHolder =
+                        AnnotationConfigUtils.applyScopedProxyMode(scopeMetadata, definitionHolder, this.registry);
+                beanDefinitions.add(definitionHolder);
+                // 根据beanName和别名，注册到工厂的map中
+                registerBeanDefinition(definitionHolder, this.registry);
+            }
+        }
+    }
+    return beanDefinitions;
+}
+```
+
+扫描文件的方法：
+
+```java
+// ClassPathScanningCandidateComponentProvider.class
+private Set<BeanDefinition> scanCandidateComponents(String basePackage) {
+    Set<BeanDefinition> candidates = new LinkedHashSet<>();
+    try {
+        String packageSearchPath = ResourcePatternResolver.CLASSPATH_ALL_URL_PREFIX +
+                resolveBasePackage(basePackage) + '/' + this.resourcePattern;
+        // 将每一个类文件都转化为Resource对象
+        Resource[] resources = getResourcePatternResolver().getResources(packageSearchPath);
+        boolean traceEnabled = logger.isTraceEnabled();
+        boolean debugEnabled = logger.isDebugEnabled();
+        for (Resource resource : resources) {
+            if (traceEnabled) {
+                logger.trace("Scanning " + resource);
+            }
+            if (resource.isReadable()) {
+                try {
+                    // MetadataReader对象生成后，就已经将注解的值都读取到了
+                    MetadataReader metadataReader = getMetadataReaderFactory().getMetadataReader(resource);
+                    // 使用includeFilters来进行筛选，筛选出Component/Named的类
+                    // 再通过Conditional注解的条件类进行匹配
+                    if (isCandidateComponent(metadataReader)) {
+                        ScannedGenericBeanDefinition sbd = new ScannedGenericBeanDefinition(metadataReader);
+                        sbd.setResource(resource);
+                        sbd.setSource(resource);
+                        if (isCandidateComponent(sbd)) {
+                            // 判断是独立的bean，或者虽然是抽象类但有Lookup注解（单例对象下注入多例对象的解决方案）
+                            candidates.add(sbd);
+                        }
+                        // ...
+                    }
+                    
+                }
+                // ...
+            }
+        }
+    }
+    catch (IOException ex) {
+        // ...
+    }
+    return candidates;
+}
+```
+
+# 参考
+- [SpringIOC源码解析（基于注解）](https://mp.weixin.qq.com/s?__biz=MzU5MDgzOTYzMw==&mid=2247484575&idx=1&sn=f3ab20313adb38ea543163e320a8d5f7&scene=21#wechat_redirect)
+- [Spring @Conditional注解 详细讲解及示例](https://blog.csdn.net/xcy1193068639/article/details/81491071)
+- [Spring的@Lookup](https://blog.csdn.net/ydonghao2/article/details/90898845)

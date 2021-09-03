@@ -76,3 +76,5 @@ public interface BeanDefinition extends AttributeAccessor, BeanMetadataElement {
 
 # 参考
 - [bean中的autowire-candidate又是干什么的](https://cloud.tencent.com/developer/article/1591125)
+- [@Autowired 与@Resource的区别](https://blog.csdn.net/weixin_40423597/article/details/80643990)
+- []()
