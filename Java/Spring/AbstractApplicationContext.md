@@ -290,6 +290,22 @@ protected void invokeBeanFactoryPostProcessors(ConfigurableListableBeanFactory b
 }
 ```
 
+进入到`invokeBeanFactoryPostProcessors(beanFactory, this.beanFactoryPostProcessors)`方法后，会发现原来项目中的BeanFactoryPostProcessor基本都是在此时才被`getBean()`，即不存在则创建
+
+注意区分：BeanDefinitionRegistryPostProcessor和BeanFactroyPostProcessor，前者作为后者的继承
+
+> 主要处理的是类似像AOP这样的注册逻辑，在ConfigurationClassPostProcessor(@Configuration类)中会读取某些如图`@Import`的类型，调用其`registerBeanDefinitions()`接口进行加载
+
+```java
+class PostProcessorRegistrationDelegate {
+    // 注意：以下方法中，BDRPP和BFPP都按照实现PriorityOrded、Ordered接口的顺序进行注册处理
+	public static void invokeBeanFactoryPostProcessors() {
+        // 处理BeanDefinitionRegistryPostProcessor
+
+        // 处理BeanFactoryPostProcessor
+    }
+```
+
 根据不同的`规则`，会按照`不同的顺序`来调用`invokeBeanFactoryPostProcessors(...)`方法，以实现在bean实例化前做特殊操作的功能
 
 ```java
