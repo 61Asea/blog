@@ -412,6 +412,8 @@ public abstract class AbstractAutoProxyCreator {
 
 关键方法：AbstractAutoProxyCreator.`wrapIfNecessary(Object bean, String beanName, Object cacheKey)`
 
+>  重点：this.advisedBeans包括了无法匹配到切面的bean，如果bean为原型的话，当第一次判断不匹配后，后续都将直接返回
+
 ```java
 protected Object wrapIfNecessary(Object bean, String beanName, Object cacheKey) {
     // 已经被处理过，无需再处理，targetSourcedBeans代表被处理过的bean
@@ -419,6 +421,7 @@ protected Object wrapIfNecessary(Object bean, String beanName, Object cacheKey) 
         return bean;
     }
     // 如果bean是切面bean，无需处理
+    // this.advisedBeans包括了无法匹配到切面的bean，如果bean为原型的话，当第一次判断不匹配后，后续都将直接返回
     if (Boolean.FALSE.equals(this.advisedBeans.get(cacheKey))) {
         return bean;
     }
@@ -695,12 +698,18 @@ public Object proceed() throws Throwable {
 }
 ```
 
+# **总结**
+
+
+
 # 参考
 - [基于注解的SpringAOP源码解析（二）](https://mp.weixin.qq.com/s?__biz=MzU5MDgzOTYzMw==&mid=2247484595&idx=1&sn=6395c62a309422bd25d039e8bde505bd&chksm=fe396e8dc94ee79b494e0d05434a856e91e03d42b7d64a383e007cc563c277a8f0924997661c&scene=178&cur_album_id=1344425436323037184#rd)
 
 - [基于注解的SpringAOP源码解析（三）](https://mp.weixin.qq.com/s?__biz=MzU5MDgzOTYzMw==&mid=2247484599&idx=1&sn=312ab31f9449281cf77c3abb7337c9b1&chksm=fe396e89c94ee79f3d6d27bef7d17e496d57c99fb3ef96d7bfeb0a0fea74592a703b63ac2d56&scene=178&cur_album_id=1344425436323037184#rd)
 
 - [isInfrastructureClass()](https://blog.csdn.net/yinbucheng/article/details/81079841)
+
+- [Java中的代理模式](https://mp.weixin.qq.com/s/1DRmvuky5_NMRcH-toTLqQs)
 
 # 重点参考
 - [详解Spring中Bean的this调用导致AOP失效的原因](https://my.oschina.net/guangshan/blog/1807721)
