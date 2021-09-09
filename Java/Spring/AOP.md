@@ -638,7 +638,59 @@ protected Object wrapIfNecessary(Object bean, String beanName, Object cacheKey) 
 
 在以上的一波操作后，现在工厂的bean缓存里已经不是bean本身了，而是bean的增强对象
 
-通过JDk的动态代理，看一下@Before、@After、@Around是如何在里面体现的：
+![jdk-proxy和aop](https://asea-cch.life/upload/2021/09/jdk-proxy%E5%92%8Caop-8ec4650d874d451ab0d596ec88200af2.jpg)
+
+> [《java-jdk动态代理生成的代理类源码》](https://www.cnblogs.com/dengrong/p/8533242.html)
+
+```java
+package com.lvwan;
+
+public interface Service {
+    void helo();
+}
+
+public class XXXService {
+    // 获取的是proxy增强对象
+    @Autowired
+    private Service proxy;
+
+    public void helo() {
+        // proxy的helo()方法如下
+        proxy.helo();
+    }
+}
+
+// 动态反编译生成的代理class获得
+public class Proxy动态代理类 extends Proxy implements XXXService {
+    Method m1, m2, m3, m4;
+
+    static {
+        m0 = Class.forName("java.lang.Object").getMethod("hashCode", ...);
+        m1 = Class.forName("java.lang.Object").getMethod("equals", new Class[] { Class.forName("java.lang.Object") });
+        m2 = Class.forName("java.lang.Object").getMethod("toString", ...);
+        // 加载顶层接口的方法
+        m3 = Class.forName("com.lvwan.Service").getMethod("helo", ...);
+    }
+
+    public Proxy动态代理类(InvocationHandler invocationHandler) {
+        // 将JdkDymaticAopProxy实例组合到代理类中
+        super(invocationHandler);
+    }
+
+    @Override
+    public void helo() {
+        // 调用JdkDymaticAopProxy实例的invoke方法, 因为helo()方法无餐，所以第三个参数为null
+        // 如果helo方法有参数的话，会将其包装成Object[]传入到jdkDymaticAopProxy的invoke方法中
+        try {
+            return (this.h.invoke(this, m3, null));
+        } catch () {
+            ...
+        }
+    }
+}
+```
+
+JdkDymaticAopProxy，重点注意`@Before`、`@After`、`@Around`是如何在里面体现的：
 
 ```java
 // JdkDynamicAopProxy.java
@@ -654,6 +706,12 @@ public Object invoke(Object proxy, Method method, Object[] args) throws Throwabl
         retVal = AopUtils.invokeJoinpointUsingReflection(target, method, argsToUse);
     }
     else {
+        // proxy：传入的Proxy动态代理类
+        // target：被代理的对象
+        // method：被代理的方法
+        // args：调用代理对象方法时，传入的参数
+        // targetClass：被代理的对象类
+        // chain：切面链
         invocation = new ReflectiveMethodInvocation(proxy, target, method, args, targetClass, chain);
         retVal = invocation.proceed();
     }
@@ -669,6 +727,7 @@ public Object invoke(Object proxy, Method method, Object[] args) throws Throwabl
 public Object proceed() throws Throwable {
     // 递归的基础条件
     if (this.currentInterceptorIndex == this.interceptorsAndDynamicMethodMatchers.size() - 1) {
+        // 真正调用target的方法
         return invokeJoinpoint();
     }
 
@@ -697,10 +756,6 @@ public Object proceed() throws Throwable {
     }
 }
 ```
-
-# **总结**
-
-
 
 # 参考
 - [基于注解的SpringAOP源码解析（二）](https://mp.weixin.qq.com/s?__biz=MzU5MDgzOTYzMw==&mid=2247484595&idx=1&sn=6395c62a309422bd25d039e8bde505bd&chksm=fe396e8dc94ee79b494e0d05434a856e91e03d42b7d64a383e007cc563c277a8f0924997661c&scene=178&cur_album_id=1344425436323037184#rd)
