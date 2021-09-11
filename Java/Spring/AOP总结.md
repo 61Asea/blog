@@ -9,13 +9,14 @@
 JDK动态代理和CGLIB字节码代理会各自生成代理类的class文件，当调用容器bean的接口方法时时，会对应调用到代理类的相同接口：
 
 ```java
-// JDK代理
+// JDK代理生成的class
 public void 被代理方法() {
     invocationHandler.invoke(...)
 }
 
-// CGLIB代理
+// CGLIB代理生成的class
 public void 被代理方法() {
+    // intercept中包含了cglib，invoke或invokeSuper两种方式，后者可使得this调用到增强对象
     methodInterceptor.intercept(...);
 }
 ```
@@ -252,9 +253,72 @@ public class EmployController {
 
 # **2. @Configuration对@bean动态代理**
 
+@Configuration采用cglib模式，它通过重写Interceptor来实现不同的intercept方法
 
+```java
+// ConfigurationClassEnhancer#BeanMethodInterceptor
+private static class BeanMethodInterceptor implements MethodInterceptor, ConditionalCallback {
+    @Override
+    @Nullable
+    public Object intercept(Object enhancedConfigInstance, Method beanMethod, Object[] beanMethodArgs,
+    MethodProxy cglibMethodProxy) throws Throwable {
+        // 。。。
+
+        if (isCurrentlyInvokedFactoryMethod(beanMethod)) {
+            // 。。。
+            return cglibMethodProxy.invokeSuper(enhancedConfigInstance, beanMethodArgs);
+        }
+    }
+}
+```
+
+可以发现，它没有像以上的对象调用target对象，而是通过直接调用cglib的父类方法，这样则使得this引用生效，这里的差距是通过：cglib的拦截器对MethodProxy接口方法调用不同导致的
+
+> 调用链：调用代理对象的期望接口方法 -> 调用拦截器的intercptor方法 -> 以下代码
+
+注意以下两种方式调用，this的上下文是不同的，前者是对于父类的上下文，
+
+- MethodProxy.invoke()：上下文只有target，this指代的就是target
+
+    > interceptor方法中会ReflectiveMethodInvocation接口的proceed方法，该方法会再调用到以下代码
+
+    ```java
+    // CglibAopProxy#CglibMethodInvocation
+    private static class CglibMethodInvocation extends ReflectiveMethodInvocation {
+        private final MethodProxy methodProxy;
+
+        protected Object invokeJointpoint() throws Throwable {
+            // ...
+
+            // invoke方法，调用传入target的真实方法
+            return this.methodProxy.invoke(this.target, this.arguments);
+        }
+    }
+    ```
+
+- MethodProxy.invokeSuper()（@Configuration就是属于这种方式）：上下文是代理对象，super方法中的this指代代理对象
+
+    ```java
+    // ConfigurationClassEnhancer # BeanMethodInterceptor
+    private static class BeanMethodInterceptor implements MethodInterceptor {
+        @Override
+        public Object intercept(..., Method cglibMethodProxy) {
+            // ...
+
+            // 调用父类方法，this引用生效
+            return cglibMethodProxy.invokeSuper(enhancedConfigInstance, beanMethodArgs);
+        }
+    }
+    ```
 
 # 参考
 - [SpringAOP会导致的一些问题](https://www.jianshu.com/p/5fd84480c43f)
 - [@Configuration 和 @Component 区别](https://blog.csdn.net/isea533/article/details/78072133)
+
+- [Cglib源码分析 invoke和invokeSuper的差别](https://blog.csdn.net/makecontral/article/details/79593732)：从反编译class文件的角度来解释
+
+- [Cglib invoke以及invokeSuper的一点区别](https://www.cnblogs.com/lvbinbin2yujie/p/10284316.html)
+
+# 重点参考
 - [详解Spring中Bean的this调用导致AOP失效的原因](https://my.oschina.net/guangshan/blog/1807721)
+- [完全读懂Spring框架之AOP实现原理](https://my.oschina.net/guangshan/blog/1797461)
