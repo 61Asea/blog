@@ -189,14 +189,14 @@ public class ConnectionImpl implements MysqlConnection {
 
 作用：用于执行静态SQL语句并返回它所生成结果的对象
 
-使用方式：Statement st = conn.createStatement();
+使用方式：`Statement st = conn.createStatement();`
 
 共有三种Statement类：
-- Statement：由createStatement()方法创建，用于发送简单的SQL语句，不带参数
-- PreparedStatement：继承自Statement接口，用于发送带有arg参数的语句
-- CallableStatement：调用存储过程
+- Statement：`动态占位符`，在处理SQL的程序中执行变量绑定操作，然后再将SQL发送到数据库引擎处理
 
-> PreparedStatement效率比Statement高，且可以防止SQL注入，一般都使用PreparedStatement
+- PreparedStatement：`静态占位符`，将含有占位符的SQL语句直接发送到数据库引擎，执行`预编译`操作等准备工作后`确定SQL语句`，随后绑定值也被发送到数据库引擎，数据库引擎将收到的值填充进SQL语句后将其执行
+
+- CallableStatement：调用存储过程
 
 接口代码：
 
@@ -214,9 +214,88 @@ public interface Statement {
 }
 ```
 
-#### **PrepareStatement和Statement的区别**
+### **PrepareStatement和Statement的区别**
 
-PreparedStatement用于执行有`"?"`参数预编译的SQL语句
+![Statement和PreparedStatement](https://asea-cch.life/upload/2021/09/Statement%E5%92%8CPreparedStatement-204bd3fd5ed9404ea9474a20835d9a41.jpg)
+
+> [数据库预编译为何能防止SQL注入？](https://www.zhihu.com/question/43581628)
+
+PrepareStatement同样实现Statement接口，主要提供了`预编译`功能：
+
+> 适用场景：一条SQL语句需要反复执行多次，并且只有字段的值可能存在改变
+
+- 分析SQL静态占位符的关键词汇，之后将不会再重复编译，每次执行都省去了解析优化等过程，提升**执行效率**
+
+- SQL的功能确定，所以在后续传入什么"AND"，"OR"这些都关键词到占位符中，都只会被当做普通字符串进行处理（转义处理），**可以防止SQL注入**
+
+```java
+// ServerPreparedStatement的构造函数
+protected ServerPreparedStatement(MySQLConnection conn, String sql, String catalog, int resultSetType, int resultSetConcurrency) throws SQLException {
+    // ...
+    try {
+        // 将含有静态占位符的SQL语句模板提前发送到Mysql引擎进行预编译
+        serverPrepare(sql);
+    }
+    // ...
+}
+```
+
+#### **配置参数**
+
+关于PreparedStatement，有两个重要的配置参数：
+
+- useServerPrepStmts：使用服务端预编译
+
+    > 如果没有开启，则PreparedStatement实质上是一个假的预编译Statement，并不会真正产生`PREPARE`、`EXECUTE`命令
+
+- cachePrepStmts：在客户端上使用预编译缓存机制，缓存是`对应于每一个连接`，而不是共享的
+
+    在mysql-connection-java.jar包中存有预编译语句的缓存，缓存的key是完整的sql语句，value是preparedStatement对象
+
+    当开启cachePrepStmts后，`preparedStatement.close()`将不会真正地向服务器发送`closeStmt`，而是将PreparedStatment的状态置为关闭，并**放入缓存**中，在下一次使用时直接从缓存中取出使用
+
+
+> 所以，只有结合`useServerPrepStmts = true`和`cachePrepStmts = true`，才能最大程度的提升执行效率
+
+#### **执行效率**
+
+频繁使用的语句上，使用预编译+缓存确实能够得到可观的提升；然而对于不频繁使用的语句，服务端编译会增加额外开销，要视情况而定
+
+### **1.1.4 ResultSet**
+
+作用：存放查询结果集合
+
+使用：`ResultSet rs = st.executeQuery()`
+
+类型：在创建Statement时指定生成的类型`conn.createStatement(int resultSetType, int resultSetConcurrency)`
+- resultSetType：结果集的遍历类型
+
+    - ResultSet.TYPE_FORWARD_ONLY：只能向前滚动，默认值
+    - ResultSet.TYPE_SCROLL_INSENSITIVE：任意的前后滚动，对于修改不敏感
+
+        一旦创建后，如果数据库的数据再发生修改，对它而言无法感知
+
+    - ResultSet.TYPE_SCROLL_SENSITIVE：任意的前后滚动，对于修改敏感
+
+        一旦创建后，如果数据库的数据发生修改，可感知
+
+- resultSetConcurrency：结果集访问的并发级别
+
+    - ResultSet.CONCUR_READ_ONLY：设置为只读类型
+    - ResultSet.CONCUR_UPDATABLE：设置为可修改类型
+    > 可以使用ResultSet的更新方法来更新里面的数据
+
+- 大致种类的ResultSet
+
+    - 基本
+
+        `conn.createStatement()`获得，不支持滚动读取，只能使用next()方法逐个读取
+
+    - 可滚动
+
+        支持前后滚动操作：next()、previous()、回到第一行first()、取set中的第几行absolute()
+
+        `conn.createStatement(Result.TYPE_SCROLL_INSENITIVE, ResultSet.CONCUR_READ_ONLY)`
 
 ## **1.2 JDBC连接数据库步骤**
 
@@ -224,20 +303,72 @@ PreparedStatement用于执行有`"?"`参数预编译的SQL语句
 static {
     // 1. 加载厂商的驱动类
     Class.forName("com.mysql.jdbc.Driver");
+
+    // 2. 建立连接
+    Connection conn = DriverManager.getConnection(url, user, password);
+
+    // 3. 获取执行SQL语句的Statement对象
+    PreparedStatement psmt = conn.preparedStatement(sql);
+    psmt.setInt(index1, ...);
+    psmt.setString(index2, "...");
+
+    // 4. 执行SQL语句
+    ResultSet rs = psmt.executeQuery();
+
+    // 5. 处理结果集
+    while (rs.next()) {
+        rs.getString("col_name");
+        rs.getInt(1);
+    }
+
+    // 6. 释放资源
+    try {
+        if (rs != null) {
+            rs.close();
+        }
+    } catch(SQLException e) {
+        e.printStackTrace();
+    } finally {
+        try {
+            if (psmt != null) {
+                psmt.close();
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        } finally {
+            try {
+                if (conn != null) {
+                    conn.close();
+                }
+            } catch (SQLException e) {
+                e.printStackTrace();
+            }
+        }
+    }
 }
 ```
+
+#### **释放资源**
+
+关闭顺序：ResultSet -> Statement -> Connection
 
 # **2. 数据源**
 
 思路：
+
 - 数据库连接池工作原理和实现方案，druid就是其中一种，这与JDBC2.0提供的DataSource数据源接口做交互
 
-- 设计一个数据库连接池方案（druid咯）
+- 设计一个数据库连接池方案（druid）
 
 # 参考
 - [双亲委派模型破坏](https://blog.csdn.net/sinat_34976604/article/details/86723663)
 - [传统JDBC](https://www.cnblogs.com/erbing/p/5805727.html)
 
+- [你不知道的PreparedStatement预编译](https://blog.csdn.net/alex_xfboy/article/details/83901351)
+
 - [JDBC和druid的简单介绍](https://www.cnblogs.com/knowledgesea/p/11202918.html)
 
 - [Spring JDBC源码解析](https://mp.weixin.qq.com/s?__biz=MzU5MDgzOTYzMw==&mid=2247484601&idx=1&sn=3c0e33701105a65e74627bc7a40e545d&scene=21#wechat_redirect)
+
+# 重点参考
+- [数据库预编译为何能防止SQL注入？](https://www.zhihu.com/question/43581628)

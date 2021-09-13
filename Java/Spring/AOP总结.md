@@ -276,8 +276,7 @@ private static class BeanMethodInterceptor implements MethodInterceptor, Conditi
 
 > 调用链：调用代理对象的期望接口方法 -> 调用拦截器的intercptor方法 -> 以下代码
 
-注意以下两种方式调用，this的上下文是不同的，前者是对于父类的上下文，
-
+注意：以下两种方式调用，this的上下文是不同的
 - MethodProxy.invoke()：上下文只有target，this指代的就是target
 
     > interceptor方法中会ReflectiveMethodInvocation接口的proceed方法，该方法会再调用到以下代码
