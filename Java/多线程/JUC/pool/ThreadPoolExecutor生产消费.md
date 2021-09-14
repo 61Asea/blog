@@ -297,7 +297,38 @@ private Runnable getTask() {
 }
 ```
 
-getTask()是线程池控制核心线程数量的重要代码，关键点在于第二个if。通过是否对阻塞队列的poll的超时情况，来反映出当前环境下生产与消费的情况。当wc大于corePoolSize时，结合上次操作的超时情况与当前任务队列是否为空，可以看出消费者的是否有足够的消费速率。
+getTask()是线程池控制核心线程数量的重要代码，关键点在于第二个if。通过是否对阻塞队列的poll的超时情况，来反映出当前环境下生产与消费的情况。当wc大于corePoolSize时，结合上次操作的超时情况与当前任务队列是否为空，可以看出消费者的是否有足够的消费速率
+
+通过以上代码，在CAS设置了wc的数量后，该调用栈返回到`ThreadPoolExecutor#runWorker(Worker w)`方法中
+
+```java
+final void runWorker(Worker w) {
+    // ...
+    try {
+        // ...
+    } finally {
+        processWorkerExit(w, completedAbruptly);
+    }
+    }
+```
+
+最终在`processWorkerExit`方法会将`w`线程关闭，可以认为这个消费端的调节由**任务驱动**：
+
+> 执行任务 -> 唤醒等待线程并分配 -> 任务执行完毕 -> 检查线程从阻塞到被唤醒的时间是否超时 -> 超时代表消费速率快，可以关闭该线程 -> 调用线程池的关闭线程方法进行关闭
+
+```java
+private void processWorkerExit(Worker w, boolean completedAbruptly) {
+    final ReentrantLock mainLock = this.mainLock;
+    mainLock.lock();
+    try {
+        completedTaskCount += w.completedTasks;
+        // 将线程从hashset中移除
+        workers.remove(w);
+    } finally {
+        mainLock.unlock();
+    }
+}
+```
 
 # 参考
 - [Java线程池ThreadPoolExecutor使用和分析(二) - execute原理](https://www.cnblogs.com/trust-freedom/p/6681948.html)

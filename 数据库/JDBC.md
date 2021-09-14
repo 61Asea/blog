@@ -354,11 +354,13 @@ static {
 
 # **2. 数据源**
 
-思路：
+<!-- 思路：
 
 - 数据库连接池工作原理和实现方案，druid就是其中一种，这与JDBC2.0提供的DataSource数据源接口做交互
 
-- 设计一个数据库连接池方案（druid）
+- 设计一个数据库连接池方案（druid） -->
+
+
 
 # 参考
 - [双亲委派模型破坏](https://blog.csdn.net/sinat_34976604/article/details/86723663)
@@ -372,3 +374,4 @@ static {
 
 # 重点参考
 - [数据库预编译为何能防止SQL注入？](https://www.zhihu.com/question/43581628)
+- [JDBC与数据库连接池](https://blog.csdn.net/lonelymanontheway/article/details/83339837)
