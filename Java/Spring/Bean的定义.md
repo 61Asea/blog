@@ -98,7 +98,7 @@ public interface BeanDefinition extends AttributeAccessor, BeanMetadataElement {
 
     "id"作为标识符，“name1”、“name2”、“name3”、“alias1”作为bean的别名
 
-    > 注意，<alias>标签中的name对于的值应该为<bean>的`标识符`
+    > 注意，\<alias>标签中的name对于的值应该为\<bean>的`标识符`
 
 ## **2.1 装配相关注解**
 
