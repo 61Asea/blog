@@ -360,6 +360,81 @@ static {
 
 - 设计一个数据库连接池方案（druid） -->
 
+## **2.1 数据库连接池设计**
+
+> DataSource可以认为是生产方的设计，ThreadPool可以认为是消费方的设计
+
+问题：
+- 数据库连接资源无法重用，频繁创建数据库连接开销大
+- 没有统一的连接管理，不恰当的使用可能导致泄漏
+- 无法应对突发流量
+
+针对以上问题，成熟的连接池方案需包括：`连接建立`、`连接释放`、`连接分配`，并提供以下参数：
+- 初始化连接数
+- 最小空闲连接数
+- 最大连接数
+
+为了使得`连接复用`，连接池需要抽象出`池连接（Pooled Connection）`的概念，它是`真实数据库连接（Physical Connection）`的代理类，池会维护池连接状态和真实连接状态
+
+### **连接建立/连接分配**
+
+传统方式：在`连接分配`时才进行`连接建立`，如果**突发应用流量**，将瞬间创建多个（可能大量）的数据库连接
+
+```java
+// 连接分配
+Connection conn = DriverManager.getConnect("...");
+
+// DriverManager.getConnect()
+private static Connection getConnection(String url, java.util.Properties info, Class<?> caller) throws SQLException {
+    // ....
+
+    // 连接建立
+    Connection con = aDriver.driver.connect(url, info);
+}
+```
+
+解决思路：可以在初始化池时就先**创建一些连接代理**，建立真实连接后缓存在池中。在连接分配时，将状态为`polling（空闲）`的池连接分配给应用，只有在超过池可用连接数量时，才创建新的数据库连接
+
+### **连接释放**
+
+传统方式：当业务操作完毕后，连接**并不复用**，所以为了防止连接泄漏，必须在try-finally块中确保连接关闭
+
+```java
+try {
+    Connection conn = DriverManager.getConnection("..");
+    // 业务操作
+} finally {
+    conn.close();
+}
+```
+
+解决思路：调用`池连接代理`close()方法时，并不会真正的关闭数据库连接，而是转为修改池连接的`可用状态`
+
+### **连接管理**
+
+传统方式：无，完全由用户维护
+
+解决思路：
+
+- `连接建立`和`连接分配`：隐藏建立连接的流程，只提供给用户分配接口，用户只管取
+
+    边界值：
+    - 最大连接数：确保数据库连接不会无限制的扩张，连接过多会降低服务的吞吐量，甚至导致进程OOM
+    - 最小空闲连接数（核心连接数）：控制当前可用的连接数，超出时则收缩，不够时则增加
+
+    计数值：
+    - 当前空闲连接数：未被使用的连接个数
+    - 当前活跃连接数：正在被使用的连接个数
+
+    > activeCount + pollingCount 应小于最大连接数，pollingCount应大于等于最小空闲连接数
+
+- `连接销毁`：只提供回收接口，隐藏连接复用的流程，并提供收缩功能
+
+## **2.2 druid**
+
+![druid连接流转](https://asea-cch.life/upload/2021/09/druid%E8%BF%9E%E6%8E%A5%E6%B5%81%E8%BD%AC-fa9475ac515c4638bad8b4fe0b84f634.png)
+
+![druid获取连接](https://asea-cch.life/upload/2021/09/druid%E8%8E%B7%E5%8F%96%E8%BF%9E%E6%8E%A5-1086ba67cc3a4f72956c8b96aa873aed.png)
 
 
 # 参考
@@ -375,3 +450,8 @@ static {
 # 重点参考
 - [数据库预编译为何能防止SQL注入？](https://www.zhihu.com/question/43581628)
 - [JDBC与数据库连接池](https://blog.csdn.net/lonelymanontheway/article/details/83339837)
+
+- [连接的销毁，连接泄露检测与重用](https://my.oschina.net/everxu/blog/1632048)
+- [获取连接](https://my.oschina.net/everxu/blog/1630166)
+- [DruidDataSource源码解析](https://blog.csdn.net/Dwade_mia/article/details/78877867)
+- [Druid连接池原理学习](https://cloud.tencent.com/developer/article/1330421)
