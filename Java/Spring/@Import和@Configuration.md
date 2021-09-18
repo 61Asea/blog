@@ -1,42 +1,30 @@
-# Spring：事务
+# Spring：@Import和@Configuration
 
-# **开启事务**
+@Configuration注解通过`ConfigurationClassPostProcessor`对内部的属性和方法进行解析，它是一个**BeanFactoryPostProcessor**
+
+在应用上下文加载完BeanFactoryProcessor后，有以下调用栈：`AbstractApplicationContext`#`refresh()`#`invokeBeanFactoryPostProcess()`方法
 
 ```java
-@EnableTransactionManagement
-@Configuration
-public class JDBCConfig {
-    @Bean
-    public DruidDataSource druidDataSource() {
-        DruidDataSource druidDataSource = new DruidDataSource();
-        druidDataSource.setUsername("...");
-        druidDataSource.setPassword("...");
-        druidDataSource.setDriverClassName("...");
-        druidDataSource.setUrl("...");
-        return druidDataSource;
-    }
-
-    @Bean
-    public JDBCService jdbcService(DruidDataSource druidDataSource) {
-        JdbcTemplate jdbcTemplate = new JdbcTemplate(druidDataSource);
-        return new JDBCService(jdbcTemplate);
-    }
-
-    @Bean
-    public DataSourceTransactionManager dataSourceTransactionManager(DruidDataSource druidDataSource) {
-        return new DataSourceTransactionManager(druidDataSource);
+// 上一层调用：postProcessBeanDefinitionRegistry(BeanDefinitionRegistry)
+public class PostProcessorRegistrationDelegate {
+    public static void invokeBeanFactoryPostProcessors(
+    ConfigurableListableBeanFactory beanFactory, List<BeanFactoryPostProcessor> beanFactoryPostProcessors) {
+        // 调用所有BeanDefinitionRegistryPostProcessor的postProcessBeanDefinitionRegistry方法
     }
 }
 ```
 
-与AOP的`@EnableAspectJAutoProxy`注解类似，在`ConfigurationClassPostProcessor`中读取配置：
-
-> ConfigurationClassPostProcessor是一个**BeanFactoryPostProcessor**，可以看调用栈：`AbstractApplicationContext`#`refresh()`#`invokeBeanFactoryPostProcess()`方法
+ConfigurationClassPostProcessor就是一个`BeanDefinitionRegistryPostProcessor`，它的postProcessBeanDefinitionRegistry方法将会被调用到：
 
 ```java
-// 上一层调用：postProcessBeanDefinitionRegistry(BeanDefinitionRegistry)
-
 // ConfigurationClassPostProcessor.class
+
+@Override
+public void postProcessBeanDefinitionRegistry(BeanDefinitionRegistry registry) {
+    // 从这开始进入主题
+    processConfigBeanDefinitions(registry);
+}
+
 public void processConfigBeanDefinitions(BeanDefinitionRegistry registry) {
     List<BeanDefinitionHolder> configCandidates = new ArrayList<>();
     String[] candidateNames = registry.getBeanDefinitionNames();
@@ -201,10 +189,3 @@ private void loadBeanDefinitionsForConfigurationClass(ConfigurationClass configC
 - `AutoProxyRegistrar`：ImportBeanDefinitionRegistrar类型，用于向工厂注册`AbstractAutoProxyCreator`，以实现事务对象的代理
 
 - `ProxyTransactionManagementConfiguration`：Configuration类型，着重注意其注入的`BeanFactoryTransactionAttributeSourceAdvisor`这个bean，该bean是SpringAOP事务的核心
-
-<!-- 今晚目标：总结AutoProxyRegistrar和ProxyTransactionManagementConfiguration这两个Registrar是如何被加载到的
-
-重新归纳一下@Import和@Configuration注解的流程 -->
-
-# 参考
-- [Spring事务源码解析（一）@EnableTransactionManagement注解](https://mp.weixin.qq.com/s/FU3hznLFspCcHYJs-x8h2Q)
