@@ -132,9 +132,10 @@ class AspectJAutoProxyRegistrar implements ImportBeanDefinitionRegistrar {
 }
 ```
 
-经过@Import的加载后（BeanDefinitionRegistryPostProcessor调用阶段），beanFactory将`AspectJAwareAdvisorAutoProxyCreator`的bean定义加载到工厂中，后续BBP在`refresh()#registerBeanPostProcessors()`进行实例/初始化：
+经过@Import（BeanDefinitionRegistryPostProcessor调用阶段）加载后，`AspectJAutoProxyRegistrar`将`AspectJAwareAdvisorAutoProxyCreator`bean定义加载到工厂中：
 
 ```java
+// AopConfigUtils.class
 @Nullable
 public static BeanDefinition registerAspectJAutoProxyCreatorIfNecessary(BeanDefinitionRegistry registry, @Nullable Object source) {
     // 传入AspectJAwareAdvisorAutoProxyCreator进行beanDefnition加载
@@ -156,6 +157,8 @@ private static BeanDefinition registerOrEscalateApcAsRequired(Class<?> cls, Bean
 }
 ```
 
+后续BBP在`refresh()#registerBeanPostProcessors()`被实例与初始化
+
 # **AspectJAwareAdvisorAutoProxyCreator**
 
 接下来，加载业务bean时（`refresh()#finishBeanFactoryInitialization(beanFactory)`），将通过该BBP对AOP信息进行**读取**，并**生成增强对象**：
@@ -166,11 +169,11 @@ private static BeanDefinition registerOrEscalateApcAsRequired(Class<?> cls, Bean
 
 ![AnnotationAwareAspectJAutoProxyCreator](https://asea-cch.life/upload/2021/09/AnnotationAwareAspectJAutoProxyCreator-32359a3936fc4d18a95e12fd2e487fd9.png)
 
-当容器开始加载业务bean时，每个bean的生命周期中，有4个阶段会被该AOP的beanPostProcessor触发：
+当容器开始加载业务bean时，每个bean的生命周期中，有2个阶段会被该AOP的beanPostProcessor触发：
 - 读取AOP信息：**实例化**bean之前
-- 获得增强对象
-    - **初始化**bean之后
-    - 如果存在循环依赖，则在**初始化之后**，通过注入对象调用`getEarlyBeanReference(Object, String)`提前获得
+- 获得增强对象：**初始化**bean之后
+
+> 如果存在循环依赖，同样在**初始化之后**，通过注入对象调用`getEarlyBeanReference(Object, String)`提前获得
 
 ## **读取AOP信息**
 
@@ -273,6 +276,7 @@ public abstract class AbstractAutoProxyCreator {
 
         ```java
         protected List<Advisor> findCandidateAdvisors() {
+            // ...
             return this.advisorRetrievalHelper.findAdvisorBeans();
         }
 
@@ -756,6 +760,14 @@ public Object proceed() throws Throwable {
     }
 }
 ```
+
+# **关键流程**
+
+1. 加载`AspectJAwareAdvisorAutoProxyCreator`（AbstractAutoProxyCreator）到bean工厂中，这个过程与@Configuration和@Import注解相关
+
+2. 在`postProcessBeforeInstantiation`中，通过shouldSkip判断，将@AspectJ注解的类转化为Advisor，注册到bean工厂中后缓存到AbstractAutoProxyCreator的advisedBeans结构中，该结构可以加速其他bean的代理包装方法wrapIfNeccessary
+
+3. 在`postProcessAfterInitialization`中，会再次查找Advisor类型的组件，并从它们之中找出当前bean可应用的增强组件，若有则返回代理对象
 
 # 参考
 - [基于注解的SpringAOP源码解析（二）](https://mp.weixin.qq.com/s?__biz=MzU5MDgzOTYzMw==&mid=2247484595&idx=1&sn=6395c62a309422bd25d039e8bde505bd&chksm=fe396e8dc94ee79b494e0d05434a856e91e03d42b7d64a383e007cc563c277a8f0924997661c&scene=178&cur_album_id=1344425436323037184#rd)

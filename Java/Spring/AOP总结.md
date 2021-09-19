@@ -272,16 +272,66 @@ private static class BeanMethodInterceptor implements MethodInterceptor, Conditi
 }
 ```
 
-可以发现，它没有像以上的对象调用target对象，而是通过直接调用cglib的父类方法，这样则使得this引用生效，这里的差距是通过：cglib的拦截器对MethodProxy接口方法调用不同导致的
+可以发现，它没有像以上的对象调用target对象，而是通过直接调用cglib的父类方法，这样则使得this引用生效，这里的差距是由cglib的拦截器对MethodProxy接口方法调用不同导致的
 
-> 调用链：调用代理对象的期望接口方法 -> 调用拦截器的intercptor方法 -> 以下代码
+> 调用链：调用代理对象的期望接口方法 -> 调用拦截器的intercept方法 -> 以下代码
 
-注意：以下两种方式调用，this的上下文是不同的
-- MethodProxy.invoke()：上下文只有target，this指代的就是target
+cglib的接口方法中调用的就是拦截器数组，一般的cglib对象的拦截器数组包括`DynamicAdvisedInterceptor`，而@Configuration对象的数组包括了`BeanMethodInterceptor`，这两者在调用方法时的this上下文是不同的
 
-    > interceptor方法中会ReflectiveMethodInvocation接口的proceed方法，该方法会再调用到以下代码
+- methodProxy.invoke()：上下文只有target，this指代的就是target
+
+    > intercept方法中会调用ReflectiveMethodInvocation接口的proceed方法，该方法会再调用到以下代码
 
     ```java
+    // CglibAopProxy.DynamicAdvisedInterceptor
+    private static class DynamicAdvisedInterceptor implements MethodInterceptor, Serializable {
+        // 之前传入的ProxyFactory
+        private final AdvisedSupport advised;
+
+        public DynamicAdvisedInterceptor(AdvisedSupport advised) {
+            this.advised = advised;
+        }
+
+        @Override
+        public Object intercept(Object proxy, Method method, Object[] args, MethodProxy methodProxy) {
+            Object oldProxy = null;
+			boolean setProxyContext = false;
+			Object target = null;
+			TargetSource targetSource = this.advised.getTargetSource();
+			try {
+				if (this.advised.exposeProxy) {
+					oldProxy = AopContext.setCurrentProxy(proxy);
+					setProxyContext = true;
+				}
+				target = targetSource.getTarget();
+				Class<?> targetClass = (target != null ? target.getClass() : null);
+                // 像JdkDynamicAopProxy一样，获取全部Advisor形成的拦截器链，形成一条职责链
+				List<Object> chain = this.advised.getInterceptorsAndDynamicInterceptionAdvice(method, targetClass);
+				Object retVal;
+				if (chain.isEmpty() && Modifier.isPublic(method.getModifiers())) {
+                    // chain为空，直接调用代理对象
+					Object[] argsToUse = AopProxyUtils.adaptArgumentsIfNecessary(method, args);
+					retVal = methodProxy.invoke(target, argsToUse);
+				}
+				else {
+					// 链子不为空，走CglibMethodInvocation
+					retVal = new CglibMethodInvocation(proxy, target, method, args, targetClass, chain, methodProxy).proceed();
+				}
+				retVal = processReturnType(proxy, target, method, retVal);
+				return retVal;
+			}
+			finally {
+				if (target != null && !targetSource.isStatic()) {
+					targetSource.releaseTarget(target);
+				}
+				if (setProxyContext) {
+					// Restore old proxy.
+					AopContext.setCurrentProxy(oldProxy);
+				}
+			}
+        }
+    }
+
     // CglibAopProxy#CglibMethodInvocation
     private static class CglibMethodInvocation extends ReflectiveMethodInvocation {
         private final MethodProxy methodProxy;
@@ -295,7 +345,9 @@ private static class BeanMethodInterceptor implements MethodInterceptor, Conditi
     }
     ```
 
-- MethodProxy.invokeSuper()（@Configuration就是属于这种方式）：上下文是代理对象，super方法中的this指代代理对象
+- methodProxy.invokeSuper()：上下文是代理对象，super方法中的this指代代理对象
+
+    > @Configuration就是属于这种方式
 
     ```java
     // ConfigurationClassEnhancer # BeanMethodInterceptor

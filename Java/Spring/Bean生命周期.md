@@ -28,11 +28,15 @@
 
 13. **调用BeanPostProcess.postProcessBeforeInitialization()方法**
 
+    > @PostConstructor
+
 14. 调用InitializingBean.afterPropertiesSet()方法，对A进行扩展处理
 
 15. 调用A的自定义init-method方法
 
 16. **调用BeanPostProcess.postProcessAfterInitialization()方法**
+
+    > @Aspect
 
 17. 调用DisposableBean.destroy()方法，调用栈：DisposableBeanAdapter.destroy()
 

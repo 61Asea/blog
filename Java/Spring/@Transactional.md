@@ -73,7 +73,7 @@ public class TransactionManagementConfigurationSelector extends AdviceModeImport
 
 - `AutoProxyRegistrar`
 
-    `ImportBeanDefinitionRegistrar`类型，用于向工厂注册`AbstractAutoProxyCreator`，以实现事务对象代理
+    `ImportBeanDefinitionRegistrar`类型，用于向工厂注册`InfrastructureAdvisorAutoProxyCreator`，以实现事务对象代理
     
     代理的方式根据注解的`proxy-target-class`决定，true表示强制使用cglib
 
@@ -158,13 +158,337 @@ public class TransactionManagementConfigurationSelector extends AdviceModeImport
 
 使用`@Transactional`注解后，我们只需要专注于我们的业务，而不需要关心其它的操作，这是因为Spring事务通过AOP实现
 
-## **读取事务相关的AOP信息**
+读取Advisor的逻辑仍然在`AbstractAutoProxyCreator`中，然而读取增强信息并不在`postProcessBeforeInstantiation`时间节点，这是因为InfrastructureAdvisorAutoProxyCreator并没有重写shouldSkip方法
+
+流程：**读取事务相关AOP信息，并返回事务增强**
+
+相关类：InfrastructureAdvisorAutoProxyCreator
 
 ```java
+public class InfrastructureAdvisorAutoProxyCreator extends AbstractAdvisorAutoProxyCreator {
+	@Nullable
+	private ConfigurableListableBeanFactory beanFactory;
 
+	@Override
+	protected void initBeanFactory(ConfigurableListableBeanFactory beanFactory) {
+        super.initBeanFactory(beanFactory);
+        this.beanFactory = beanFactory;
+	}
+
+	@Override
+	protected boolean isEligibleAdvisorBean(String beanName) {
+		return (this.beanFactory != null && this.beanFactory.containsBeanDefinition(beanName) && this.beanFactory.getBeanDefinition(beanName).getRole() == BeanDefinition.ROLE_INFRASTRUCTURE);
+	}
+
+    // 并没有重写shouldSkip和findCandidates两个方法，则默认都使用父类的
+}
 ```
 
-## **获取增强**
+前面提到，BeanFactoryTransactionAttributeSourceAdvisor是在`postProcessAfterInitialization`节点被加载，并且会被应用到有@Transactional的bean上
+
+```java
+// AbstractAdvisorAutoProxyCreator.class
+
+protected List<Advisor> findEligibleAdvisors(Class<?> beanClass, String beanName) {
+    // 加载所有Advisor类型的组件，包括BeanFactoryTransactionAttributeSourceAdvisor
+    List<Advisor> candidateAdvisors = findCandidateAdvisors();
+    // 判断这些增强组件中，有哪些是可以应用到当前bean的，内部调用关键方法canApply
+    List<Advisor> eligibleAdvisors = findAdvisorsThatCanApply(candidateAdvisors, beanClass, beanName);
+    // ...
+    return eligibleAdvisors;
+}
+
+public static boolean canApply(Advisor advisor, Class<?> targetClass, boolean hasIntroductions) {
+    if (advisor instanceof IntroductionAdvisor) {
+        return ((IntroductionAdvisor) advisor).getClassFilter().matches(targetClass);
+    }
+    else if (advisor instanceof PointcutAdvisor) {
+        // 事务的增强是PointcutAdvisor类型，走这
+        PointcutAdvisor pca = (PointcutAdvisor) advisor;
+
+        // 事务增强的Pointcut，是TransactionAttributeSourcePointcut
+        return canApply(pca.getPointcut(), targetClass, hasIntroductions);
+    }
+    else {
+        // It doesn't have a pointcut so we assume it applies.
+        return true;
+    }
+}
+
+public static boolean canApply(Pointcut pc, Class<?> targetClass, boolean hasIntroductions) {
+    // 筛除filter中没有的对象，默认filter会对全部对象返回true，表示全部都可通过
+    if (!pc.getClassFilter().matches(targetClass)) {
+        return false;
+    }
+
+    // 事务的pointcut调用getMethodMatcher方法后，返回的还是pc自身
+    MethodMatcher methodMatcher = pc.getMethodMatcher();
+    if (methodMatcher == MethodMatcher.TRUE) {
+        return true;
+    }
+
+    // 事务并不是该类型的，所以为null
+    IntroductionAwareMethodMatcher introductionAwareMethodMatcher = null;
+    if (methodMatcher instanceof IntroductionAwareMethodMatcher) {
+        introductionAwareMethodMatcher = (IntroductionAwareMethodMatcher) methodMatcher;
+    }
+
+    // 递归获得目标bean实现或继承的所有接口
+    Set<Class<?>> classes = new LinkedHashSet<>(ClassUtils.getAllInterfacesForClassAsSet(targetClass));
+    classes.add(targetClass);
+    // 遍历bean的所有接口
+    for (Class<?> clazz : classes) {
+        // 获得接口的所有方法
+        Method[] methods = ReflectionUtils.getAllDeclaredMethods(clazz);
+        for (Method method : methods) {
+            // 走后半段的methodMatcher.matches(method, targetClass)方法，也就是TransactionAttributeSourcePointcut重写的matches方法
+            if ((introductionAwareMethodMatcher != null && introductionAwareMethodMatcher.matches(method, targetClass, hasIntroductions)) || methodMatcher.matches(method, targetClass)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+```
+
+是否能应用该增强的逻辑跳转到了`TransactionAttributeSourcePointcut`的matches方法：
+
+> source为`AnnotationTransactionAttributeSource`，在@ImportSelector中引入
+
+```java
+public abstract class TransactionAttributeSourcePointcut extends StaticMethodMatcherPointcut {
+    @Override
+    public boolean matches(Method method, @Nullable Class<?> targetClass) {
+        // 如果是事务代理类，则说明已经被代理过了
+        if (targetClass != null && TransactionProxy.class.isAssignableFrom(targetClass)) {
+            return false;
+        }
+        // 该方法调用事务增强中的transactionAttributeSource
+        TransactuionAttributeSource tas = getTransactionAttributeSource();
+        // 
+        return (tas == null || tas.getTransactionAttribute(method, targetClass) != null);
+    }
+}
+```
+
+AnnotationTransactionAttributeSource的父类方法`getTransactionAttribute`会为每个method缓存其是否有事务属性：
+
+```java
+// AbstractFallbackTransactionAttributeSource.class
+public TransactionAttribute getTransactionAttribute(Method method, @Nullable Class<?> targetClass) {
+    if (method.getDeclaringClass() == Object.class) {
+        return null;
+    }
+
+    Object cacheKey = getCacheKey(method, targetClass);
+    // 从缓存中获取method是否有事务属性
+    Object cached = this.attributeCache.get(cacheKey);
+    if (cached != null) {
+        if (cached == NULL_TRANSACTION_ATTRIBUTE) {
+            return null;
+        }
+        else {
+            return (TransactionAttribute) cached;
+        }
+    }
+    else {
+        // 重中之重，该方法会解析当前方法及其类的事务属性
+        TransactionAttribute txAttr = computeTransactionAttribute(method, targetClass);
+        if (txAttr == null) {
+            // 没有事务，则缓存空结果到缓存中
+            this.attributeCache.put(cacheKey, NULL_TRANSACTION_ATTRIBUTE);
+        }
+        else {
+            // 获取方法的签名属性
+            String methodIdentification = ClassUtils.getQualifiedMethodName(method, targetClass);
+            if (txAttr instanceof DefaultTransactionAttribute) {
+                // 如果事务属于DefaultTransactionAttribute，则将方法的签名设置到其描述属性（descriptor）中
+                ((DefaultTransactionAttribute) txAttr).setDescriptor(methodIdentification);
+            }
+            if (logger.isDebugEnabled()) {
+                logger.debug("Adding transactional method '" + methodIdentification + "' with attribute: " + txAttr);
+            }
+            // 方法具备事务属性，缓存解析结果
+            this.attributeCache.put(cacheKey, txAttr);
+        }
+        return txAttr;
+    }
+}
+```
+
+看一下读取AOP信息的最重要方法`computeTransactionAttribute`，它通过反射来解析方法以及类，查找是否有事务属性：
+
+> 在阅读这部分代码时，要注意区分两个概念，一个是传入方法`形参method`，另一个是目标方法`specificMethod`
+
+```java
+// AbstractFallbackTransactionAttributeSource.class
+protected TransactionAttribute computeTransactionAttribute(Method method, @Nullable Class<?> targetClass) {
+    // 如果设置了只允许public修饰符方法可以应用事务，则非公有的方法都不可以使用事务
+    if (allowPublicMethodsOnly() && !Modifier.isPublic(method.getModifiers())) {
+        return null;
+    }
+
+    // 忽略cglib代理的子类
+    Class<?> userClass = (targetClass != null ? ClassUtils.getUserClass(targetClass) : null);
+    // 获取最为准确的目标方法，因为method可能只是个接口方法，会寻找有其实现的方法
+    Method specificMethod = ClassUtils.getMostSpecificMethod(method, userClass);
+    // 如果当前方法是一个泛型方法，则会找Class文件中时机实现的方法
+    specificMethod = BridgeMethodResolver.findBridgedMethod(specificMethod);
+    
+    // 1. 先尝试解析目标方法，获取其事务属性
+    TransactionAttribute txAttr = findTransactionAttribute(specificMethod);
+    if (txAttr != null) {
+        return txAttr;
+    }
+    
+    // 2. 再尝试去解析目标方法所在类，获取类是否有事务属性
+    txAttr = findTransactionAttribute(specificMethod.getDeclaringClass());
+    // 如果存在事务属性，并且传入方法是用户实现的方法
+    if (txAttr != null && ClassUtils.isUserLevelMethod(method)) {
+        return txAttr;
+    }
+
+    // 如果通过解析到的方法无法找到事务属性，则判断解析得到的方法与传入的目标方法是否为同一个方法，
+    // 如果不是同一个方法，则尝试对传入的方法及其所在的类进行事务属性解析
+    if (specificMethod != method) {
+        // 对传入方法解析事务属性，如果存在，则直接返回
+        txAttr = findTransactionAttribute(method);
+        if (txAttr != null) {
+            return txAttr;
+        }
+
+        // 对传入方法所在类进行事务属性解析，如果存在，则直接返回
+        txAttr = findTransactionAttribute(method.getDeclaringClass());
+        if (txAttr != null && ClassUtils.isUserLevelMethod(method)) {
+            return txAttr;
+        }
+    }
+    return null;
+}
+```
+
+解析事务属性的方法，是通过**解析目标方法上的@Transactional注解**，若有则封装为TransactionAttribute对象并返回，这个事务属性对象包含了用户在@Transactional注解上填写的属性值
+
+到这里，最上层的InfrastructureAdvisorAutoProxyCreator在`postProcessAfterInitialization`节点的工作已经完成了一半：
+
+```java
+protected Object wrapIfNecessary(Object bean, String beanName, Object cacheKey) {
+    // ...
+
+    // 这里是上面增强获取源码分析的最上层入口
+    Object[] specificInterceptors = getAdvicesAndAdvisorsForBean(bean.getClass(), beanName, null);
+    if (specificInterceptors != DO_NOT_PROXY) {
+        this.advisedBeans.put(cacheKey, Boolean.TRUE);
+        // 这里将获取事务增强，我们在下面继续介绍
+        Object proxy = createProxy(
+                bean.getClass(), beanName, specificInterceptors, new SingletonTargetSource(bean));
+        this.proxyTypes.put(cacheKey, proxy.getClass());
+        return proxy;
+    }
+
+    this.advisedBeans.put(cacheKey, Boolean.FALSE);
+    return bean;
+}
+```
+
+同AOP获取切面创建代理对象一致，createProxy()方法在创建jdk代理，或者cglib代理时，都会将上面的事务增强器以组合/继承的方式加入到代理对象中，并返回最终的代理对象
+
+# **调用拦截链方法**
+
+cglib为例，当调用代理对象的接口方法时，进而会调用拦截器`DynamicAdvisedInterceptor`的intercept方法来进行**动态增强**
+
+```java
+// CglibAopProxy#DynamicAdvisedInterceptor
+private static class DynamicAdvisedInterceptor implements MethodInterceptor, Serializable {
+    // 在创建cglib时传入的ProxyFactory类型对象，里面包含了事务增强组件
+    private final AdvisedSupport advised;
+
+    public DynamicAdvisedInterceptor(AdvisedSupport advised) {
+        this.advised = advised;
+    }
+
+    @Override
+    public Object intercept(Object proxy, Method method, Object[] args, MethodProxy methodProxy) {
+        // ...
+
+        // 将ProxyFactory中的全部Advisor组件按照order串成一条职责链
+        List<Object> chain = this.advised.getInterceptorsAndDynamicInterceptionAdvice(method, targetClass);
+        Object retVal;
+        if (chain.isEmpty() && Modifier.isPublic(method.getModifiers())) {
+            Object[] argsToUse = AopProxyUtils.adaptArgumentsIfNecessary(method, args);
+            retVal = methodProxy.invoke(target, argsToUse);
+        }
+        else {
+            // chain肯定不为空啦，有事务增强组件的拦截逻辑
+
+            // proceed()递归，将全部动态拦截增强都执行完
+            retVal = new CglibMethodInvocation(proxy, target, method, args, targetClass, chain, methodProxy).proceed();
+        }
+        retVal = processReturnType(proxy, target, method, retVal);
+        return retVal;
+    }
+}
+```
+
+全部Advisor组件的advice对象串成职责链，并调用这条链上每个Advice对象的`invoke()方法`
+
+> 这条职责链就包括了BeanFactoryTransactionAttributeSourceAdvisor的advice，它是TransactionInterceptor，是在Import时注册的另外一个bean
+
+```java
+public class TransactionInterceptor extends TransactionAspectSupport implements MethodInterceptor, Serializable {
+    @Override
+    public Object invoke(final MethodInvocation invocation) throws Throwable {
+        Class<?> targetClass = (invocation.getThis() != null ? AopUtils.getTargetClass(invocation.getThis()) : null);
+        // 被代理的方法，被代理的对象，以及被代理方法包装类的proceed方法
+        return invokeWithTransaction(invocation.getMethod(), targetClass, invocation::proceed);
+    }
+}
+```
+
+invokeWithTransaction()方法的实现在TransactionInterceptor的父类上，其包含了事务开启的细节：
+
+> 在[《AOP总结一文》]()简单介绍了其是如何开启事务，并且以事务开启为例讲解了AOP代理下this的问题
+
+```java
+protected Object invokeWithinTransaction(Method method, @Nullable Class<?> targetClass, final InvocationCallback invocation) throws Throwale {
+    TransactionAttributeSource tas = getTransactionAttributeSource();
+    // 获取事务属性
+    final TransactionAttribute txAttr = (tas != null ? tas.getTransactionAttribute(method, targetClass) : null);
+    final PlatformTransactionManager tm = determineTransactionManager(txAttr);
+    // 方法的标识，生成的字符串为："[targetClass的标识符].[method]"，如"userService.testTransaction"
+    final String joinpointIdentification = methodIdentification(method, targetClass, txAttr);
+    if (txAttr == null || (!tm instanceof CallbackPreferringPlatformTransactionManager)) {
+        // 声明式事务，非侵入所以延伸性良好，粒度最小为方法但是有解决方法
+
+        // 1. 创建事务
+        TransactionInfo txInfo = createTransactionIfNecessary(tm, txAttr, joinpointIdentification);
+        Object retVal = null;
+        try {
+            // 2. 执行调用链和目标方法，即包装后的MethodInvocation的proceed()方法
+            retVal = invocation.proceedWithInvocation();
+        } catch (Throwale ex) {
+            // 3. 异常，则事务回滚
+            compleTransactionAfterThrowing(txInfo, ex);
+            throw ex;
+        } finally {
+            // 4. 清除事务信息
+            clearupTransactionInfo(txInfo);
+        }
+        // 5. 成功则提交事务
+        commitTransactionAfterReturning(txInfo);
+        return retVal;
+    } else {
+        // 编程式事务，因为代码侵入性强，业务上不推荐使用
+    }
+}
+```
+
+今天任务：看到事务拦截器TransactionInterceptor是如何被代理调用的
+
+中秋两日任务：看完拦截器事务操作的具体细节，包括：DataSourceTransactionManager，事务传播级别
 
 # 参考
 - [Spring事务源码解析（一）@EnableTransactionManagement注解](https://mp.weixin.qq.com/s/FU3hznLFspCcHYJs-x8h2Q)
+- [Spring事务源码解析（二）获取增强](https://mp.weixin.qq.com/s/5tTrdl5GuD9WAyuHNUvW8w)
+- [Spring事务源码解析（三）](https://mp.weixin.qq.com/s?__biz=MzU5MDgzOTYzMw==&mid=2247484625&idx=1&sn=e57f571d353cfb98ac3f6b0df755ea1a&chksm=fe396eefc94ee7f9c84a7a873cfadf2e55ef85eee6efa06a137a6feb472edce45befb7eb1d83&scene=178&cur_album_id=1344425436323037184#rd)

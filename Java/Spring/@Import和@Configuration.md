@@ -16,13 +16,22 @@ public class PostProcessorRegistrationDelegate {
 
 ConfigurationClassPostProcessor就是一个`BeanDefinitionRegistryPostProcessor`，它的postProcessBeanDefinitionRegistry方法将会被调用到：
 
+> 在下面方法通过ConfigurationClassEnhancer会创建一个cglib实例，该实例包括了ConfigurationClassEnhancer的拦截器回调，其中`BeanMethodInterceptor`相当重要，其拦截方法实现上调用了`invokeSuper`方法，这也是@Configuration的cglib和其他bean的cglib不同之处
+
 ```java
 // ConfigurationClassPostProcessor.class
 
 @Override
 public void postProcessBeanDefinitionRegistry(BeanDefinitionRegistry registry) {
-    // 从这开始进入主题
-    processConfigBeanDefinitions(registry);
+    
+    if (!this.registriesPostProcessed.contains(factoryId)) {
+        // 从这开始进入主题
+        processConfigBeanDefinitions(registry);
+    }
+
+    // 另外一个重点：Configuration使用cglib代理，
+    enhanceConfigurationClasses(beanFactory);
+    beanFactory.addBeanPostProcessor(new ImportAwareBeanPostProccessor(beanFactory));
 }
 
 public void processConfigBeanDefinitions(BeanDefinitionRegistry registry) {
