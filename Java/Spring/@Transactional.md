@@ -160,7 +160,7 @@ public class TransactionManagementConfigurationSelector extends AdviceModeImport
 
 读取Advisor的逻辑仍然在`AbstractAutoProxyCreator`中，然而读取增强信息并不在`postProcessBeforeInstantiation`时间节点，这是因为InfrastructureAdvisorAutoProxyCreator并没有重写shouldSkip方法
 
-流程：**读取事务相关AOP信息，并返回事务增强**
+流程：**在bean自定义init方法调用后，读取事务相关AOP信息，并返回事务增强**
 
 相关类：InfrastructureAdvisorAutoProxyCreator
 
@@ -181,14 +181,15 @@ public class InfrastructureAdvisorAutoProxyCreator extends AbstractAdvisorAutoPr
 	}
 
     // 并没有重写shouldSkip和findCandidates两个方法，则默认都使用父类的
+    // shouldSkip()默认返回false，findCandidates()返回全部类型为Advisor的bean
 }
 ```
 
-前面提到，BeanFactoryTransactionAttributeSourceAdvisor是在`postProcessAfterInitialization`节点被加载，并且会被应用到有@Transactional的bean上
+前面提到，BeanFactoryTransactionAttributeSourceAdvisor是在`postProcessAfterInitialization`节点被加载，并且会被应用到有`@Transactional`的bean上：
 
 ```java
 // AbstractAdvisorAutoProxyCreator.class
-
+// 该调用栈来自wrapIfNeccessary()中的getAdvicesAndAdvisorsForBean()方法
 protected List<Advisor> findEligibleAdvisors(Class<?> beanClass, String beanName) {
     // 加载所有Advisor类型的组件，包括BeanFactoryTransactionAttributeSourceAdvisor
     List<Advisor> candidateAdvisors = findCandidateAdvisors();
@@ -266,7 +267,7 @@ public abstract class TransactionAttributeSourcePointcut extends StaticMethodMat
         }
         // 该方法调用事务增强中的transactionAttributeSource
         TransactuionAttributeSource tas = getTransactionAttributeSource();
-        // 
+        // 查找method和targetClass是否有事务属性
         return (tas == null || tas.getTransactionAttribute(method, targetClass) != null);
     }
 }
@@ -392,11 +393,11 @@ protected Object wrapIfNecessary(Object bean, String beanName, Object cacheKey) 
 }
 ```
 
-同AOP获取切面创建代理对象一致，createProxy()方法在创建jdk代理，或者cglib代理时，都会将上面的事务增强器以组合/继承的方式加入到代理对象中，并返回最终的代理对象
+同AOP获取切面创建代理对象一致，createProxy()方法在创建jdk代理/cglib代理时，都会将上面的事务增强器以组合/继承的方式加入到代理对象中，并返回最终的代理对象
 
 # **调用拦截链方法**
 
-cglib为例，当调用代理对象的接口方法时，进而会调用拦截器`DynamicAdvisedInterceptor`的intercept方法来进行**动态增强**
+cglib为例，当每次调用代理对象的接口方法时，进而会调用到拦截器数组中的每个拦截器的intercept方法来进行**动态增强**，其中就包括了`DynamicAdvisedInterceptor`
 
 ```java
 // CglibAopProxy#DynamicAdvisedInterceptor
@@ -431,7 +432,9 @@ private static class DynamicAdvisedInterceptor implements MethodInterceptor, Ser
 }
 ```
 
-全部Advisor组件的advice对象串成职责链，并调用这条链上每个Advice对象的`invoke()方法`
+上面的getInterceptorsAndDynamicInterceptionAdvice，会将全部Advisor组件的advice对象串成职责链，并缓存起来
+
+这条链上每个Advice对象的`invoke()方法`都会在后续的CglibMethodInvocation类中被依次调用
 
 > 这条职责链就包括了BeanFactoryTransactionAttributeSourceAdvisor的advice，它是TransactionInterceptor，是在Import时注册的另外一个bean
 
@@ -446,15 +449,19 @@ public class TransactionInterceptor extends TransactionAspectSupport implements 
 }
 ```
 
+# **声明式事务**
+
 invokeWithTransaction()方法的实现在TransactionInterceptor的父类上，其包含了事务开启的细节：
 
 > 在[《AOP总结一文》]()简单介绍了其是如何开启事务，并且以事务开启为例讲解了AOP代理下this的问题
 
 ```java
+// TransactionInterceptor.class
 protected Object invokeWithinTransaction(Method method, @Nullable Class<?> targetClass, final InvocationCallback invocation) throws Throwale {
     TransactionAttributeSource tas = getTransactionAttributeSource();
     // 获取事务属性
     final TransactionAttribute txAttr = (tas != null ? tas.getTransactionAttribute(method, targetClass) : null);
+    // 返回一个PlatformTransactionManager
     final PlatformTransactionManager tm = determineTransactionManager(txAttr);
     // 方法的标识，生成的字符串为："[targetClass的标识符].[method]"，如"userService.testTransaction"
     final String joinpointIdentification = methodIdentification(method, targetClass, txAttr);
@@ -484,9 +491,166 @@ protected Object invokeWithinTransaction(Method method, @Nullable Class<?> targe
 }
 ```
 
+## **创建事务**
+
+创建事务并没有显式调用`begin`，而是隐式事务
+
+在隐式事务之下，数据库实例第一次执行`update`、`insert`、`alert table`、`create`等语句时，会自动开启事务，开启的事务需要**显式调用**commit或rollback结束。当事务结束时，一旦运行上面的语句，又会开启新的一轮事务，形成一个`事务链`
+
+> 隐式事务在事务结束时一定要记得调用**commit**或**rollback**
+
+入参：
+
+- tm：在上一层返回的PlatformTransactionManager
+- txAttr：事务属性，在前置的是否能应用事务增强的判断逻辑中有获取过一遍
+- joinpointIdetification：方法标识符
+
+```java
+protected TransactionInfo createTransactionIfNeccessary(@Nullable PlatformTransactionManager tm, @Nullable TransactionAttribute txAttr, final String joinpointIdentification) {
+    if (txAttr != null && txAttr.getName() == null) {
+        txAttr = new DelegatingTransactionAttribute(txAttr) {
+            @Override
+            public String getName() {
+                return joinpointIdentification;
+            }
+        };
+    }
+
+    TransactionStatus status = null;
+    if (txAttr != null) {
+        if (tm != null) {
+            // 1. 创建事务
+            status = tm.getTransaction(txAttr);
+        } else {
+            if (logger.isDebugEnabled()) {
+                // ...
+            }
+        }
+    }
+    // 2. 构建事务信息
+    return prepareTransactionInfo(tm, txAttr, joinpointIdentification, status);
+}
+```
+
+tm.getTransaction的具体实现在`AbstractPlatformTransactionManager`中，而TransactionManager真实的DataSource我们在文章一开头的配置已经注册了，为`DruidDataSource`
+
+在这里开始要与JDBC的DataSource接口做交互了：
+
+```java
+// AbstractPlatformTransactionManager.class
+@Override
+public final TransactionStatus getTransaction(@Nullable TransactionDefinition definition) {
+    // 1.1 获取事务
+    Object transaction = doGetTransaction();
+
+    boolean debugEnabled = logger.isDebugEnabled();
+
+    if (definition == null) {
+        // 如果没有事务定义（事务属性）
+        definition = new DefaultTransactionDefinition();
+    }
+
+    // 1.2 判断当前线程是否存在事务，涉及传播机制
+    if (isExistingTransaction(transaction)) {
+        // 线程存在事务则使用嵌套事务/当前事务/新起事务处理，具体的做法由传播机制的特性决定
+        return handleExistingTransaction(definition, transaction, debugEnabled);
+    }
+
+    if (definition.getPropagationBehavior() == TransactionDefinition.PROPAGATION_MANDATORY) {
+        // 如果当前没有事务，但是事务的传播行为被定义为PROPAGATION_MANDATORY，则抛出异常
+        throw new IllegalTransactionStateException("No existing transaction found for transaction marked with propagation 'mandatory'");
+    } else if (definition.getPropagationBehavior() == TransactionDefinition.PROPAGATION_REQUIRED || definition.getPropagationBehavior() == TransactionDefinition.PROPAGATION_REQUIRES_NEW || definition.getPropagationBehavior() == TransactionDefinition.PROPAGATION_NESTED) {
+        // 当事务的传播行为需要新建事务时的处理
+        SuspendedResourcesHolder suspendedResources = suspend(null);
+        if (debugEnabled) {
+            logger.debug("Creating new transaction with name [" + definition.getName() + "]: " + definition);
+        }
+        try {
+            boolean newSynchronization = (getTransactionSynchronization() != SYNCHRONIZATION_NEVER);
+            DefaultTransactionStatus status = newTransactionStatus(definition, transaction, true, newSynchronization, debugEnabled, suspendedResources);
+            // 3. 准备事务
+            deBegin(transaction, definition);
+            // 4. 记录事务状态
+            prepareSynchronization(status, definition);
+            return status;
+        } catch (RuntimeException | Error ex) {
+            resume(null, suspendedResources);
+            throw ex;
+        }
+    } else {
+        // 创建空事务
+    }
+}
+```
+
+着重看一下第三步准备事务操作`doBegin(transaction, definition)`：
+
+```java
+@Override
+protected void doBegin(Object transaction, TransactionDefinition definition) {
+    DataSourceTransactionObject txObject = (DataSourceTransactionObject) transaction;
+    Connection con = null;
+
+    try {
+        if (!txObject.hasConnectionHolder() || txObject.getConnectionHolder().isSynchronziedWithTransaction()) {
+            // 判断传进来的事务对象是否有连接绑定（在1.1获取的时候会有绑定）
+            Connection newCon = obtainDataSource().getConnection();
+            if (logger.isDebugEnabled()) {
+                logger.debug("Acquired Connect [" + newCon + "] for JDBC transaction");
+            }
+        }
+
+        // 设置事务的同步标识
+        txObject.getConnectionHolder().setSynchronizedWithTransaction(true);
+        // 获取绑定了的当前数据库连接
+        con = txObject.getConnectionHolder().getConnection();
+        // 获取设置的事务隔离级别，definition就是事务注解属性的DTO类
+        // 方法会将当前连接的隔离级别设置为事务注解定义的级别，并返回之前设置的隔离级别
+        Integer previousIsolationLevel = DataSourceUtils.prepareConnectionForTransaction(con, definition)；
+        // txObject设置previousIsolationLevel为之前的隔离级别，而且con是当前注解的隔离级别
+        txObject.setPreviousIsolationLevel(previosIsolationLevel);
+        
+        // 设置自动提交
+        if (con.getAutoCommit()) {
+            txObject.setMustRestoreAutoCommit(true);
+            if (logger.isDebugEnabled()) {
+                logger.debug("Switching JDBC Connection [" + con + "] to manual commit");
+            }
+            con.setAutoCommit(false);
+        }
+
+        prepareTransactionalConnection(con, definition);
+        //设置当前线程存在事务的标识
+        txObject.getConnectionHolder().setTransactionActive(true);
+
+        //设置超时时间
+        int timeout = determineTimeout(definition);
+        if (timeout != TransactionDefinition.TIMEOUT_DEFAULT) {
+            txObject.getConnectionHolder().setTimeoutInSeconds(timeout);
+        }
+
+        // 将当前数据源对于的事务连接，绑定到当前线程的线程变量中
+        if (txObject.isNewConnectionHolder()) {
+            TransactionSynchronizationManager.bindResource(obtainDataSource(), txObject.getConnectionHolder());
+        }
+    }
+}
+```
+
+## **传播机制**
+
+## **事务提交**
+
+## **事务回滚**
+
+保存点，save-point，快找
+
 今天任务：看到事务拦截器TransactionInterceptor是如何被代理调用的
 
 中秋两日任务：看完拦截器事务操作的具体细节，包括：DataSourceTransactionManager，事务传播级别
+
+中秋第一天进度：在查找事务的”begin“语句（找到了，目前猜测是隐式事务）
+
 
 # 参考
 - [Spring事务源码解析（一）@EnableTransactionManagement注解](https://mp.weixin.qq.com/s/FU3hznLFspCcHYJs-x8h2Q)
