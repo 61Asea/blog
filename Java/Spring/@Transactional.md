@@ -643,7 +643,9 @@ protected void doBegin(Object transaction, TransactionDefinition definition) {
 
 ## **事务回滚**
 
-保存点，save-point，快找
+保存点，save-point，快照
+
+# **进度记录**
 
 今天任务：看到事务拦截器TransactionInterceptor是如何被代理调用的
 
