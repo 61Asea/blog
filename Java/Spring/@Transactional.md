@@ -639,20 +639,124 @@ protected void doBegin(Object transaction, TransactionDefinition definition) {
 
 ## **传播机制**
 
-## **事务提交**
+> [Spring：事务传播机制]()
 
 ## **事务回滚**
 
-保存点，save-point，快照
+```java
+protected void completeTransactionAfterThrowing(@Nullable TransactionInfo txInfo, Throwale ex) {
+    if (txInfo != null && txInfo.getTransactionStatus() != null) {
+        // ...
+        if (txInfo.transactionAttribute != null && txInfo.transactionAttribute.rollbackOn(ex)) {
+            // rollbackOn配置，需要回滚
+            try {
+                txInfo.getTransactionManager().rollback(txInfo.getTransactionStatus());
+            }
+            // ...
+        }
+        else {
+            // notRollbackOn的配置，可以提交
+            try {
+                txInfo.getTransactionManager().commit(txInfo.getTransactionStatus());
+            }
+            // ...
+        }
+    }
+}
+```
 
-# **进度记录**
+事务管理器的rollback()方法最终调用栈为该类的`processRollback(DefaultTransactionStatus status, boolean unexpected)`方法，该方法会结合不同传播机制的特性进行相应的回滚操作
 
-今天任务：看到事务拦截器TransactionInterceptor是如何被代理调用的
+> 以外部事务方法调用内部事务方法的视角进行解说，假设内部事务出现异常进入以下回滚逻辑
 
-中秋两日任务：看完拦截器事务操作的具体细节，包括：DataSourceTransactionManager，事务传播级别
+```java
+private void processRollback(DefaultTransactionStatus status, boolean unexpected) {
+    try {
+        boolean unexpectedRollback = unexpected;
 
-中秋第一天进度：在查找事务的”begin“语句（找到了，目前猜测是隐式事务）
+        try {
+            // 扩展点
+            triggerBeforeCompletion(status);
 
+            if (status.hasSavepoint()) {
+                // PROPAGATION_NESTED类型才会进来这，意味着内部事务是外部的一个嵌套子事务
+
+                // 取出savepoint，并调用数据库连接，对db执行回滚到save point的操作
+                status.rollbackToHeldSavepoint();
+            } else if (status.isNewTransaction()) {
+                // PROPAGATION_REQUIRES_NEW才会进来，意味着内部事务与外部事务是两个独立的事务
+
+                // 直接调用内部事务的数据库连接（不是外部事务的连接）进行回滚操作
+                doRollback(status);
+            } else {
+                // PROPAGATION_REQUIRED、PROPAGATION_SUPPORTS、PROPAGATION_MANDATORY进入到这里，意味着内部事务与外部事务是同一个事务
+                if (status.hasTransaction()) {
+                    if (status.isLocalRollbackOnly() || isGlobalRollbackOnParticipationFailure()) {
+                        // 设置rollback-only标识位为true，整个事务是否回滚的决定权抛给外部事务
+                        doSetRollbackOnly(status);
+                    } else {
+                        // ...
+                    }
+                }
+            }
+        } catch (...) {
+            // ...
+        }
+    }
+}
+```
+
+着重注意一下`rollbackOnly`标识符，当外部和内部事务为同一个事务时，内部事务并不会直接回滚整个事务，而是打上标识符后，**将异常再抛给外部事务方法，由外部事务方法对异常再做处理**
+
+> 悟透的点：内部事务在打上标记位，并往外抛出异常后，外部事务也会随即感知到异常，并被自身切面的catch块捕获，随而进入`completeTransactionAfterThrowing`。因为外部事务是第一次创建的事务，所以isNewTransaction一定为true，随而进入到doRollback(status)逻辑中进行回滚
+
+值得一提的是，`NESTED`不会打上回滚标识位，所以外部事务不会因为内部事务的回滚而清理`rollbackOnly`标识位，仅需捕获异常即可
+
+> REQUIRED捕获异常也是无效的，因为标识位已经被内部事务打上，commit的时候会失效，这个下面会详细讲
+
+## **事务提交**
+
+```java
+protected void commitTransactionAfterReturning(@Nullable TransactionInfo txInfo) {
+    if (txInfo != null && txInfo.getTransactionStatus() != null) {
+        if (logger.isTraceEnabled()) {
+            logger.trace("Completing transaction for [" + txInfo.getJoinpointIdentification() + "]");
+        }
+        // 调用具体事务管理器的commit实现
+        txInfo.getTransactionManager().commit(txInfo.getTransactionStatus());
+    }
+}
+```
+
+`AbstractTransactionManager#commit(status)`：
+
+```java
+public final void commit(TransactionStatus status) throws TransactionException {
+    DefaultTransactionStatus defStatus = (DefaultTransactionStatus) status;
+    // 如果内部事务共用外部事务，且内部出现异常，打上了回滚标识位，则外部事务也需要回滚
+    if (defStatus.isLocalRollbackOnly()) {
+        if (defStatus.isDebug()) {
+            logger.debug("Transactional code has requested rollback");
+        }
+        processRollback(defStatus, false);
+        return;
+    }
+
+    // 
+    if (!shouldCommitOnGlobalRollbackOnly() && defStatus.isGlobalRollbackOnly()) {
+        if (defStatus.isDebug()) {
+            logger.debug("Global transaction is marked as rollback-only but transactional code requested commit");
+        }
+        processRollback(defStatus, true);
+        return;
+    }
+
+    // 真正调用数据库连接来提交事务
+    processCommit(defStatus);
+}
+```
+
+Spring的commit方法在一开始就会根据`rollbackOnly`标识位进行判断，如果外部事务想在`REQUIRED`这种类似的传播机制下中捕获内部事务的异常并最终要进行commit的话，除非在捕获内部抛出的异常后清理`rollbackOnly`位，否则即使外部事务完成业务方法后调用commit依旧会回滚
 
 # 参考
 - [Spring事务源码解析（一）@EnableTransactionManagement注解](https://mp.weixin.qq.com/s/FU3hznLFspCcHYJs-x8h2Q)
