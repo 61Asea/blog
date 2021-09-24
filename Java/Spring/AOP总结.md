@@ -216,7 +216,11 @@ public class EmployController {
             setProxyContext = true;
         }
     }
+    ```
 
+    **主要通过BBP的bean定义，如果定义里的"expose-proxy"属性值为true，则在最终代理对象的invoke方法时，设置代理对象到AopContext线程变量中**
+
+    ```java
     // CglibAopProxy$DynamicAdvisedinterceptor.class
     public Object intercept(Object proxy, Method method, Object[] args, MethodProxy methodProxy) throws Throwable {
         // ....
@@ -231,7 +235,7 @@ public class EmployController {
     }
     ```
 
-    通过AopContext来获取动态代理对象：
+    通过`AopContext`来获取动态代理对象：
 
     ```java
     @Component
@@ -249,7 +253,13 @@ public class EmployController {
     }
     ```
 
-    > 然而这种方式对@Async注解不生效，因为它不是使用AspectJ的自动代理（AbstractAutoProxyCreator），而是使用**代码中固定的创建代理方式进行代理创建**
+    然而这种方式对@Async注解不生效，因为它不是使用AspectJ的自动代理（AbstractAutoProxyCreator），而是使用**代码中固定的创建代理方式进行代理创建**
+    
+    前者会读取@EnableAspectJAutoProxy的expose-proxy属性并设置到bean定义中来注册`AbstractAutoProxyCreator`，而后者是直接注册的`AsyncAnnotationBeanPostProcessor`，所以后者感知不到expose-proxy
+
+    使用AopConfigUtils.forceAutoProxyCreatorToExposeProxy(registry)可以替代掉在@EnableAspectJAutoProxy上填充`expose-proxy = true`的方式，但仍只对@Transactional注解有效，因为其注册的APC和AOP注册APC是同一个bean标识符，都为`"org.springframework.aop.config.internalAutoProxyCreator"`，而@Async不是这个标识符
+
+    > 但是思路依旧明确，@Async只要在其BBP创建，但还未被使用时，用其他方式修改其expose-proxy属性，也是可以的
 
 # **2. @Configuration对@bean动态代理**
 
