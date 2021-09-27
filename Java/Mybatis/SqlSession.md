@@ -495,8 +495,17 @@ public class JdbcTransaction {
 
 ![Transaction_SqlSession_Connection](https://asea-cch.life/upload/2021/09/Transaction_SqlSession_Connection-0349e45743d9466ab243717bc8eea922.png)
 
-结论：业务通过Mybatis执行DB操作，SqlSession和Connection的关系为1:1，那么可以简单认为SqlSession是Connection的包装类
+结论：
+
+1. 业务通过Mybatis执行DB操作，SqlSession和Connection的关系为1:1，那么可以简单认为SqlSession是Connection的包装类
+
+2. org.apache.ibatis.mapping.StatementType中包含了：STATEMENT、PREPARED、CALLABLE，默认为PREPARED，所以生成的Statement为PreparedStatement
+
 
 # 参考
 - [SqlSession、SqlSessionFactory和SqlSessionFactoryBuilder](https://blog.csdn.net/chris_mao/article/details/48803545)
+
+# 重点参考
+- [源码org.apache.ibatis.*]()
 - [Sqlsession、Connection和Transaction原理与三者间的关系](https://blog.csdn.net/AiMaiShanHuHai/article/details/102984764)
+- [spring中的mybatis的sqlSession是如何做到线程隔离的？](https://www.cnblogs.com/yougewe/p/10072740.html)
