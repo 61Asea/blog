@@ -4,6 +4,8 @@
 
 SqlSession是线程非安全的，因此不能被共享，**每个线程都应该有它自己的SqlSession实例**
 
+![Mybatis](https://asea-cch.life/upload/2021/09/Mybatis-4a767dc49e944f8fb0f158b0364e0a6a.png)
+
 ```java
 // 简单的伪代码
 public class App {
@@ -68,11 +70,21 @@ public class SqlSessionFactoryBuilder {
 }
 ```
 
-解析xml的工作交由`XMLConfigBuilder`，\<environments>主要解析可能多个的\<environment>，每个\<environment>还包括有：\<transtionManager>和\<dataSource>
+解析xml的工作交由`XMLConfigBuilder`：
 
-- transactionManager：源码还称它为`TransactionFactory`，
+- \<properties>
 
-- dataSource：Mybatis内置两种数据源，分为池化和非池化，但实际使用上多数人仍以阿里的druid（德鲁伊）为主
+- \<typeAliases>
+
+- \<settings>
+
+- \<environments>：主要解析可能多个的\<environment>（每个\<environment>还包括有：\<transtionManager>和\<dataSource>）
+
+    - transactionManager：源码还称它为`TransactionFactory`，
+
+    - dataSource：Mybatis内置两种数据源，分为池化和非池化，但实际使用上多数人仍以阿里的druid（德鲁伊）为主
+
+- \<mappers>：主要解析多个\<mapper>
 
 ```java
 public class XMLConfigBuilder extends BaseBuilder {
@@ -131,9 +143,60 @@ public class XMLConfigBuilder extends BaseBuilder {
                 configuration.setEnvironment(environmenBuilder.build());
             }
         }
-    }    
+    }
+
+    // 传入<mappers>标签
+    private void mapperElement(XNode parent) throws Exception {
+        if (parent != null) {
+            for (XNode child : parent.getChildren()) {
+                if ("package".equals(child.getName())) {
+                    // <package>标签
+                    String mapperPackage = child.getStringAttribute("name");
+                    // 添加Mapper接口类到configuration
+                    configuration.addMappers(mapperPackage);
+                } else {
+                    // <mapper>标签读取属性，属性之间互斥，只能存在一个
+                    Sttring resource = child.getStringAttribute("resource");
+                    String url = child.getStringAttribute("url");
+                    String mapperClass = child.getStringAttribute("class");
+                    if (resource != null && url == null && mapperClass == null) {
+                        // <mapper resource="..." />解析，使用io，resource通常是xml配置的statement集合
+                        ErrorContext.instance().resource(resource);
+                        InputStream inputStream = Resources.getResourceAsStream(resource);
+                        XMLMapperBuilder mapperParser = new XMLMapperBuilder(inputStream, configuration, resource, configuration.getSqlFragments());
+                        // 通过XNode解析后调用configuration.addMapper加入到configuration中
+                        mapperParser.parse();
+                    } else if (resource == null && url != null && mapperClass == null) {
+                        // <mapper url="..." />解析，使用io
+                        ErrorContext.instance().resource(resource);
+                        InputStream inputStream = Resources.getUrlAsStream(url);
+                        XMLMapperBuilder mapperParser = new XMLMapperBuilder(inputStream, configuration, url, configuration.getSqlFragments());
+                        // 与resource类似
+                        mapperParser.parse();
+                    } else if (resource == null && url == null && mapperClass != null) {
+                        // <mapper class="..." />解析，直接用反射
+                        Class<?> mapperInterface = Resources.classForName(mapperClass);
+                        // 添加Mapper接口类到configuration
+                        configuration.addMapper(mapperInterface);
+                    } else {
+                        throw new BuilderException("A mapper element may only specify a url, resource or class, but not more than one");
+                    }
+                }
+            }
+        }
+    }
 }
 ```
+
+Configuration组合`MapperRegistry`，将Mapper的管理行为委托于后者，而自身存储管理了所有从XML或Mapper注解接口类解析的`Statement`：
+
+- xml：在Mybatis总配置中的\<mapper resource="...">
+
+    根据namespace读取对应xml的全部statement并注册到该结构，并以namespace解析出的Mapper类名注册到MapperRegistry
+
+- SQL注解：在Mybatis总配置中的\<mapper class="...">和\<mapper package="...">，或者与Spring整合后的组件扫描方式
+
+    直接解析注解类，读取各个方法的@Select、@Update、@Update注解，并将解析的Statement注册到该结构，将注解类注册到MapperRegistry
 
 ```java
 public class Configuration {
@@ -141,6 +204,60 @@ public class Configuration {
 
     // statemenet（xml或注解上的sql语句模板），key为statement的id，value为statement
     protected final Map<String, MappedStatement> mappedStatements = new StrictMap<MappedStatement>("Mapped Statements collection");
+
+    protected MapperRegistry mapperRegistry = new MapperRegistry(this);
+
+    // 加载package字符串使用
+    public void addMappers(String packageName) {
+        // 寄托MapperRegistry
+        mapperRegistry.addMappers(packageName);
+    }
+
+    // 加载class、url、resource使用
+    public <T> void addMapper(Class<T> type) {
+        // 寄托MapperRegistry
+        mapperRegistry.addMapper(type);
+    }
+
+    public boolean hasMapper(Class<?> type) {
+        return mapperRegistry.hasMapper(type);
+    }
+}
+```
+
+MapperRegistry具体的解析逻辑在`MapperAnnotationBuilder`中：
+
+```java
+public class MapperRegistry {
+    // 持有configuration的引用
+    private final Configuration config;
+    private final Map<Class<?>, MapperProxyFactory<?>> knownMappers = new HashMap<Class<?>, MapperProxyFactory<?>>();
+
+    public MapperRegistry(Configuration config) {
+        this.config = config;
+    }
+
+    public <T> void addMapper(Class<T> type) {
+        // Mapper都为接口类型
+        if (type.isInterface()) {
+            if (hasMapper(type)) {
+                // 不允许覆盖注册
+                throw new BindingException("Type is already know to the MapperRegistry");
+            }
+            boolean loadCompleted = false;
+            try {
+                knowMappers.put(type, new MapperProxyFactory<T>(type));
+                MappperAnnotationBuilder parser = new MapperAnnotationBuilder(config, type);
+                // 这个parser主要是为了解析注解类的；如果是xml调用该方法的话，解析在该方法调用前完成，这款里只会将mapper注册，不会再次解析
+                parser.parser();
+                loadCompleted = true;
+            } finally {
+                if (!loadCompleted) {
+                    knowMappers.remove(type);
+                }
+            }
+        }
+    }
 }
 ```
 
@@ -221,17 +338,20 @@ public class DefaultSqlSessionFactory implements SqlSessionFactory {
 
 通过SqlSessionFactory返回的SqlSession，组合了以下模块：
 - configuration
+    - `mappedStatements`：存储全部的statement
+    - `mapperRegistry`：管理全部的mapper
     - environment
-        - transactionFactory
-        - dataSource
-    - executor
-        - transaction
-            - connection（若无指定，由DataSource分配）
+        - transactionFactory：会话可忽略，这个只用在SqlSessionFactory创建会话
+        - dataSource：数据源可忽略，SqlSessionFactory创建会话时已经分配好了connection
+    - `executor`：该对象可以视为`statement`的操作执行器，一般为`SimpleExecutor`
+        - transaction：整合spring事务后，基本废弃
+            - `connection`（若无指定，由DataSource分配）
 
 ```java
 public class DefaultSqlSession implements SqlSession {
     private Configuration configuration;
 
+    // 一般为SimpleExecutor
     private Executor executor;
 
     // ...
@@ -261,9 +381,121 @@ public class DefaultSqlSession implements SqlSession {
 
 ## **Executor**
 
-明天目标：
-1. statement如何加载到configuration
-2. Executor在有/无connection时的不同处理
+通过DefaultSqlSessionFactory创建SqlSession时，传入的Executor类型都为`configuration.getDefaultExecutorType()`：
+
+```java
+// Configuration.class
+public class Configuration {
+    // SimpleExecutor
+    protected ExecutorType defaultExecutorType = ExecutorType.SIMPLE;
+
+    public ExecutorType getDefaultExecutorType() {
+        // 一般情况下返回ExecutorType.SIMPLE
+        return defaultExecutorType;
+    }
+
+    public Executor newExecutor(Transaction transaction, ExecutorType executorType) {
+        executorType = executorType == null ? defaultExecutorType : executorType;
+        executorType = executorType == null ? ExecutorType.SIMPLE : executorType;
+        Executor executor;
+        if (ExecutorType.BATCH == executorType) {
+            executor = new BatchExecutor(this, transaction);
+        } else if (ExecutorType.REUSE == executorType) {
+            executor = new ReuseExecutor(this, transaction);
+        } else {
+            // 返回SimpleExecutor
+            executor = new SimpleExecutor(this, transaction);
+        }
+        if (cacheEnabled) {
+        executor = new CachingExecutor(executor);
+        }
+        executor = (Executor) interceptorChain.pluginAll(executor);
+        return executor;
+    }
+}
+```
+
+所以我们在看sqlSession对象的db操作实现应关注`SimpleExecutor`：
+
+> 因为sqlSession可以由用户直接指定connection，也可以由DataSource分配，后者属于懒汉式加载，**加载时机就在SimpleExecutor执行操作时**
+
+```java
+public class SimpleExecutor extends BaseExecutor {
+    // 以查询操作的子类模板方法为例
+    // ms通过statementId，从Configuration中取出
+    @Override
+    public <E> List<E> doQuery(MappedStatement ms, Object parameter, RowBounds rowBounds, ResultHandler resultHandler, BoundSql boundSql) throws SQLException {
+        // 将ms和stmt进行结合
+        Statement stmt = null;
+        try {
+            Configuration confiration = ms.getConfiguration();
+            StatementHandler handler = configuration.newStatementHandler(wrapper, ms, parameter, rowBounds, resultHandler, boundSql);
+            // 获取connection，并通过connection来获取预编译statement（默认），并传入参数
+            stmt = prepareStatement(handler, ms.getStatementLog());
+            // 执行statement的execute()方法，并将结构进行映射
+            return handler.<E>query(stmt, resultHandler);
+        } finally {
+            closeStatemet(stmt);
+        }
+    }
+
+    private Statement prepareStatement(StatementHandler handler, Log statemenetLog) throws SQLException {
+        Statement stmt;
+        // 无则由DataSource分配，有（提前指定）则直接获取
+        Connection connection = getConnection(statementLog);
+        // 通过connection初始化一个PrepareStatement并返回
+        stmt = handler.parepare(connection);
+        // 往预编译sql的statement模板填充参数
+        handler.parameterize(stmt);
+    }
+
+    protected Connection getConnection(Log statementLog) throws SQLException {
+        // 事务是否有connection对象，决定于外部接口的调用，若调用DefaultSqlSessionFactory#openSessionFromDataSource则无；若调用#openSessionFromConnection则有
+        Connection connection = transaction.getConnection();
+        if (statementLog.isDebugEnabled()) {
+            return ConnectionLogger.newInstance(connection, statementLog, queryStack);
+        } else {
+            return connection;
+        }
+  }
+}
+```
+
+connection的获取可以看一下`JdbcTransaction`的实现：
+
+```java
+public class JdbcTransaction {
+    // ...
+
+    // 事务是否有connection对象，决定于外部接口的调用，若调用DefaultSqlSessionFactory#openSessionFromDataSource则无；若调用#openSessionFromConnection则有
+    @Override
+    public Connection getConnection() throws SQLException {
+        if (connection == null) {
+            openConnection();
+        }
+        return connection;
+    }
+}
+```
+
+# **SqlSession、Connection、Transaction的关系总结**
+
+> [解析Mybatis之Sqlsession、Connection和Transaction原理与三者间的关系](https://blog.csdn.net/AiMaiShanHuHai/article/details/102984764)
+
+生命周期：
+- SqlSession：只存在于一次Http请求
+- Connection：由DataSource管理
+- Transaction：伴随SqlSession生成，只存在于一次Http请求
+
+相互关系：
+- SqlSession和Transaction：一次会话可以提交多个事务操作，所以为1:N的关系
+- SqlSession和Connection：Connection不可以同时被多个线程并发使用
+    - 不同时刻的SqlSession可以复用同一个Connection，所以为N：1的关系
+    - **某一时刻的SqlSession绑定一个Connection，所以为1:1的关系**
+
+![Transaction_SqlSession_Connection](https://asea-cch.life/upload/2021/09/Transaction_SqlSession_Connection-0349e45743d9466ab243717bc8eea922.png)
+
+结论：业务通过Mybatis执行DB操作，SqlSession和Connection的关系为1:1，那么可以简单认为SqlSession是Connection的包装类
 
 # 参考
 - [SqlSession、SqlSessionFactory和SqlSessionFactoryBuilder](https://blog.csdn.net/chris_mao/article/details/48803545)
