@@ -91,6 +91,16 @@ public class XMLConfigBuilder extends BaseBuilder {
     // ...
     private String environment;
 
+    private XMLConfigBuilder(XPathParser parser, String environment, Properties props) {
+        // 父类BaseBuilder持有configuration字段，在这里初始化一个新的配置传入到父类
+        super(new Configuration());
+        ErrorContext.instance().resource("SQL Mapper Configuration");
+        this.configuration.setVariables(props);
+        this.parsed = false;
+        this.environment = environment;
+        this.parser = parser;
+    }
+
     public Configuration parse() {
         if (parsed) {
             // 已经被解析过

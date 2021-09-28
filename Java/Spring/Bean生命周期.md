@@ -87,7 +87,7 @@ bean的整个生命周期穿插在`AbstractApplicationContext`#`refresh()`中，
 
     > prototype的bean需要调用者自行销毁
 
-### **BeanPostFactoryProcessor**
+### **BeanFactoryPostProcessor**
 
 作用：通过postProcessBeanFactory，我们可以在bean实例化前对定义进行修改
 

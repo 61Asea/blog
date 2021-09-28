@@ -5,7 +5,6 @@
 在应用上下文加载完BeanFactoryProcessor后，有以下调用栈：`AbstractApplicationContext`#`refresh()`#`invokeBeanFactoryPostProcess()`方法
 
 ```java
-// 上一层调用：postProcessBeanDefinitionRegistry(BeanDefinitionRegistry)
 public class PostProcessorRegistrationDelegate {
     public static void invokeBeanFactoryPostProcessors(
     ConfigurableListableBeanFactory beanFactory, List<BeanFactoryPostProcessor> beanFactoryPostProcessors) {
@@ -100,12 +99,14 @@ doProcessConfigurationClass(configClass, sourceClass)
 protected final SourceClass doProcessConfigurationClass(ConfigurationClass configClass, SourceClass sourceClass) throws IOException {
     // ...
 
-    // 1. getImports()方法读取@Import，并在processImports方法中识别import类型，加载到configClass中
+    // 1. 处理@ComponentScan注解
+
+    // 2. getImports()方法读取@Import，并在processImports方法中识别import类型，加载到configClass中
     processImports(configClass, sourceClass, getImports(sourceClass), true);
 
     // ...
 
-    // 2. 读取@Bean方法，同样加载到configClass中
+    // 3. 读取@Bean方法，同样加载到configClass中
     Set<MethodMetadata> beanMethods = retrieveBeanMethodMetadata(sourceClass);
     for (MethodMetadata methodMetadata : beanMethods) {
         configClass.addBeanMethod(new BeanMethod(methodMetadata, configClass));

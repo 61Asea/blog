@@ -406,7 +406,7 @@ onClose：
 
 Spring为我们提供了两种类型的bean，一种是`普通bean`，我们通过`getBean(id)`方法获得该bean的实际类型；另一种是`FactoryBean`，我们通过`getBean(id)`方法获得该工厂生产的bean，而不是该FactoryBean的实例
 
-`FactoryBean`：通过工厂思想去产生新的object（bean），如果一个bean实现了该接口，那么它将被当作一个`对象的工厂`。FactoryBean本身是一个bean，但它不能被当作一个正常bean实例来使用（不能直接作为一个bean实例来公开自己）
+`FactoryBean`：通过工厂思想去产生新的object（bean），如果一个bean实现了该接口，那么它将被当作一个`对象的工厂`。FactoryBean本身是一个bean，但它不能被当作一个正常bean实例来使用，获取FactoryBean时候得到的并不是工厂本身，而是工厂产出的对象
 
 > 通常情况下，bean无须自己实现工厂模式，Spring容器担任工厂角色；但少数情况下，容器中的bean本身就是工厂，作用是产生其它bean实例。由FactoryBean产生的其它bean实例，不再由Spring容器产生，因此与普通bean的配置不同，无须配置class属性
 
