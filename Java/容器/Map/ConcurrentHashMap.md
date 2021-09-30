@@ -1025,7 +1025,7 @@ private final void addCount(long x, int check) {
             // 当前table数组正在扩容，会参与帮助扩容
             if (sc < 0) {
                 // 标志戳不同，说明不是同一个扩容过程，或扩容已经完成
-                // sc == rs + 1（bug，可能会导致某些线程在尝试辅助扩容时，无法立即正确感知扩容结束，进入扩容逻辑，在JDK12已经修复）
+                // sc == rs + 1（手误bug，rs没有先进行位移操作。可能会导致某些线程在尝试辅助扩容时，无法立即正确感知扩容结束，进入扩容逻辑，在JDK12已经修复）
 
                 // (nt = nextTable) == null，很重要的判断，防止并发扩容情况的线程不安全情况，其他线程会在这里等待第一个触发扩容的线程初始化数组，当第一个线程将数组初始化后，其他线程才会进入到辅助扩容的逻辑
                 if ((sc >>> RESIZE_STAMP_SHIFT) != rs || sc == rs + 1 || sc == rs + MAX_RESIZERS || (nt = nextTable) == null || transferIndex <= 0)
