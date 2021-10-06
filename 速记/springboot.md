@@ -237,3 +237,167 @@ public class ComponentScanAnnotationParser {
     }
 }
 ```
+
+关于注入mapper、sqlSessionTemplate和SqlSessionFactory：
+
+> 如果使用shiro，与用户权限相关mapper的bean将被提前初始化
+
+mapper通过@MapperScan注册到工厂的beanDefinitionMaps结构中，并且将类型置换为`MapperFactoryBean`
+
+```java
+public class MapperFactoryBean<T> extends SqlSessionDaoSupport implements FactoryBean<T> {
+    private Class<T> mapperInterface;
+
+    private boolean addToConfig = true;
+
+    public MapperFactoryBean() {
+
+    }
+
+    public MapperFactoryBean(Class<T> mapperInterface) {
+        this.mapperInterface = mapperInterface;
+    }
+
+    /**
+     * 通过Configuration对象获取mapper代理对象
+     */
+    @Override
+    public T getObject() throws Exception {
+        return getSqlSession().getMapper(this.mapperInterface);
+    }
+
+    /**
+     * 单例，所以该mapper代理被创建后，会缓存到factoryBeanObjectCache中
+     * 详情见：FactoryBeanRegistrySupport#getObjectFromFactorybean
+     */
+    @Override
+    public boolean isSingleton() {
+        return true;
+    }
+}
+```
+
+MapperFactoryBean的初始化和实例化过程使用`setter注入`的方式，其提供了`sqlSessionFactory`和`sqlSessionTemplate`两个成员对象的setter方法，所以在`populateBean()`方法注入FactoryBean对象属性时，也会初始化和实例化`sqlSessionFactory`和`sqlSessionTemplate`（注意有先后顺序）：
+
+```java
+public abstract class AbstractAutowireCapableBeanFactory {
+    // ...
+
+    protected void populateBean(String beanName, RootBeanDefinition mbd, @Nullable BeanWrapper bw) {
+		// ...
+
+        // mapper在这里获得的pvs暂时只有addToConfig
+		PropertyValues pvs = (mbd.hasPropertyValues() ? mbd.getPropertyValues() : null);
+
+		if (mbd.getResolvedAutowireMode() == AUTOWIRE_BY_NAME || mbd.getResolvedAutowireMode() == AUTOWIRE_BY_TYPE) {
+			MutablePropertyValues newPvs = new MutablePropertyValues(pvs);
+			// Add property values based on autowire by name if applicable.
+			if (mbd.getResolvedAutowireMode() == AUTOWIRE_BY_NAME) {
+				autowireByName(beanName, mbd, bw, newPvs);
+			}
+            // 通过类型自动注入后，会获得sqlSessionFactory和sqlSessionTemplate两个bean属性
+			if (mbd.getResolvedAutowireMode() == AUTOWIRE_BY_TYPE) {
+				autowireByType(beanName, mbd, bw, newPvs);
+			}
+			pvs = newPvs;
+		}
+
+        // ...
+
+        if (pvs != null) {
+            // 调用bean的setter方法，将pvs的值注入到bean中
+			applyPropertyValues(beanName, mbd, bw, pvs);
+		}
+    }
+}
+```
+
+所以当我们在业务中注入mapper时，其实是注入一个通过JDK代理的mapper接口类，其具体的接口方法对应statement存于`configuration`对象中，拦截器方法在`MapperProxy`对象中：
+
+```java
+public class MapperProxy<T> implements InvocationHandler, Serializable {
+    @Override
+    public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+        try {
+            if (Object.class.equals(method.getDeclaringClass())) {
+                return method.invoke(this, args);
+            } else if (isDefaultMethod(method)) {
+                return invokeDefaultMethod(proxy, method, args);
+            }
+        } catch (Throwable t) {
+            throw ExceptionUtil.unwrapThrowable(t);
+        }
+        // MapperMethod将传入方法的方法名作为statementId，将具体的statement联动
+        final MapperMethod mapperMethod = cachedMapperMethod(method);
+        // 这里传入的sqlSession是sqlSessionTemplate
+        return mapperMethod.execute(sqlSession, args);
+    }
+}
+```
+
+这样在后续调用mapper的接口时，都会通过mapperMethod来调用sqlSession的接口方法（如：select、selectOne、selectMap、update等方法），而该接口实现已经由`SqlSessionTemplate`替代，最终都会调用到SqlSessionTemplate的代理类`sqlSessionProxy`：
+
+```java
+public class SqlSessionTemplate implements SqlSession, DisposableBean {
+    private final SqlSession sqlSessionProxy;
+
+    public SqlSessionTemplate(SqlSessionFactory sqlSessionFactory, ExecutorType executorType,
+      PersistenceExceptionTranslator exceptionTranslator) {
+
+        notNull(sqlSessionFactory, "Property 'sqlSessionFactory' is required");
+        notNull(executorType, "Property 'executorType' is required");
+
+        this.sqlSessionFactory = sqlSessionFactory;
+        this.executorType = executorType;
+        this.exceptionTranslator = exceptionTranslator;
+        // 调用SqlSession接口方法时，都会调用到该代理的方法，先执行拦截器逻辑，再执行方法调用
+        this.sqlSessionProxy = (SqlSession) newProxyInstance(
+            SqlSessionFactory.class.getClassLoader(),
+            new Class[] { SqlSession.class },
+            new SqlSessionInterceptor());
+  }
+
+    private class SqlSessionInterceptor implements InvocationHandler {
+        @Override
+        public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+            // 获取真实的sqlSession对象
+            SqlSession sqlSession = getSqlSession(
+                SqlSessionTemplate.this.sqlSessionFactory,
+                SqlSessionTemplate.this.executorType,
+                SqlSessionTemplate.this.exceptionTranslator);
+            try {
+                // 执行sqlSession对象的真正接口实现，以DefaultSqlSession的实现执行具体statement
+                Object result = method.invoke(sqlSession, args);
+                if (!isSqlSessionTransactional(sqlSession, SqlSessionTemplate.this.sqlSessionFactory)) {
+                    // force commit even on non-dirty sessions because some databases require
+                    // a commit/rollback before calling close()
+                    sqlSession.commit(true);
+                }
+                return result;
+                } catch (Throwable t) {
+                Throwable unwrapped = unwrapThrowable(t);
+                if (SqlSessionTemplate.this.exceptionTranslator != null && unwrapped instanceof PersistenceException) {
+                    // release the connection to avoid a deadlock if the translator is no loaded. See issue #22
+                    closeSqlSession(sqlSession, SqlSessionTemplate.this.sqlSessionFactory);
+                    sqlSession = null;
+                    Throwable translated = SqlSessionTemplate.this.exceptionTranslator.translateExceptionIfPossible((PersistenceException) unwrapped);
+                    if (translated != null) {
+                    unwrapped = translated;
+                    }
+                }
+                throw unwrapped;
+            } finally {
+            if (sqlSession != null) {
+                closeSqlSession(sqlSession, SqlSessionTemplate.this.sqlSessionFactory);
+            }
+            }
+        }
+    }
+}
+```
+
+以上SqlSessionInterceptor的拦截逻辑在mapper的接口调用时拦截执行，可以看到里面并没有对具体多个statement的事务控制
+
+而Service方法（@Transactional一般标注在Service层的业务方法上）是Mapper的使用方，可以调用一个/多个Mapper方法，所以最后事务的提交是由TransactionInterceptor调用连接对象commit()方法完成的
+
+由此可见，事务最终的提交还是由Spring的TransactionInterceptor进行管理
