@@ -1,3 +1,34 @@
+# Mybatis：springboot整合全过程
+
+```xml
+<bean id="dataSource" class="com.alibaba.druid.pool.DruidDataSource">
+    <property name="url" value="${jdbc.url}" />
+    <property name="driverClassName" value="${jdbc.driver}" />
+    <property name="username" value="${jdbc.username}" />
+    <property name="password" value="${jdbc.password}" />
+</bean>
+
+<!-- FactoryBean，这种类型的bean暴露后，用户获取时会得到工厂产出的bean，而是用于产出其他的bean -->
+<bean id="sqlSessionFactory" class="org.mybatis.spring.SqlSessionFactoryBean">
+    <property name="dataSource" ref="dataSource" />
+    <property name="configLocation" value="classpath:mybatis-config.xml" />
+</bean>
+
+<!-- scope="prototype" 另说,另讨论，我们先以mapper形式看一下 -->
+<bean id="sqlSession" class="org.mybatis.spring.SqlSessionTemplate">
+    <constructor-arg index="0" ref="sqlSessionFactory" />
+</bean>
+
+<!-- 事务 -->
+<bean name="transactionManager"
+        class="org.springframework.jdbc.datasource.DataSourceTransactionManager">
+    <property name="dataSource" ref="dataSource"></property>
+</bean>
+```
+
+传统Spring项目需要通过xml配置文件或注解配置类来配置Mybatis的基础组件
+
+而在Springboot整合中得益于**自动装配**，我们无需再关注以上的基础配置信息，这些操作都交由`MybatisAutoConfiguration`类根据`spring-autoconfigure-metadata.properties`文件进行操作
 
 # 1. 主程序Main方法入口运行
 
@@ -102,7 +133,7 @@ public abstract AbstractApplicationContext extends DefaultResourceLoader impleme
 }
 ```
 
-套娃1：调用类型为`BeanDefinitionRegistryPostProcessor`的`postProcessBeanDefinitionRegistry(registry)`方法
+调用类型为`BeanDefinitionRegistryPostProcessor`的`postProcessBeanDefinitionRegistry(registry)`方法
 
 > ConfigurationClassPostProcessor属于PriorityOrdered类型，晚于应用上下文的bfbp，但早于其他bfbp调用
 
@@ -173,9 +204,11 @@ public class ConfigurationClassPostProcessor implements BeanDefinitionRegistryPo
 
 > @MapperScan引入的MapperScannerRegistrar在入口类的配置成员中，在`this.reader.loadBeanDefinitions(configClasses)`中，其registerBeanDefinitions方法被调用
 
+## **2.1 parser对配置信息进行解析**
+
 > 通过ClassPathMapperScanner进行扫描（doScan方法），读取出全部的Mapper组件，而mapper对应的xml配置在随后的bean初始化/实例化过程中，通过sqlSessionFactory的bean进行解析（getObject() -> buildSqlSessionFactory())，后续过程在BBP的注册中触发
 
-parse的处理流程：
+`parser.parse(candidates)`的处理流程：
 1. 处理@Component注解
 2. 处理@PropertySources注解
 3. 处理@ComponentScan注解
@@ -238,9 +271,15 @@ public class ComponentScanAnnotationParser {
 }
 ```
 
+## **2.2 加载由parser解析出来的配置类**
+
+具体可查看@Import、@Configuration的源码接信息
+
+# **3. 注入mapper、sqlSessionTemplate的时机**
+
 关于注入mapper、sqlSessionTemplate和SqlSessionFactory：
 
-> 如果使用shiro，与用户权限相关mapper的bean将被提前初始化
+> 如果使用shiro等类似自带bbp的框架，若框架涉及到db操作，与db操作相关mapper的bean将被refresh()方法中的bbp注册环节依赖注入，从而提前初始化和实例化。如：shiro框架配置类中的`ShiroFilterFactoryBean`
 
 mapper通过@MapperScan注册到工厂的beanDefinitionMaps结构中，并且将类型置换为`MapperFactoryBean`
 
@@ -291,7 +330,6 @@ public abstract class AbstractAutowireCapableBeanFactory {
 
 		if (mbd.getResolvedAutowireMode() == AUTOWIRE_BY_NAME || mbd.getResolvedAutowireMode() == AUTOWIRE_BY_TYPE) {
 			MutablePropertyValues newPvs = new MutablePropertyValues(pvs);
-			// Add property values based on autowire by name if applicable.
 			if (mbd.getResolvedAutowireMode() == AUTOWIRE_BY_NAME) {
 				autowireByName(beanName, mbd, bw, newPvs);
 			}
@@ -312,92 +350,13 @@ public abstract class AbstractAutowireCapableBeanFactory {
 }
 ```
 
-所以当我们在业务中注入mapper时，其实是注入一个通过JDK代理的mapper接口类，其具体的接口方法对应statement存于`configuration`对象中，拦截器方法在`MapperProxy`对象中：
+> 源码中会探索bean是否具备`writeObject`和`readObject`方法，一般代指的就是某个属性的getter和setter，如果都具备的情况下，会将这些属性对应的bean依赖注入到该bean中
 
-```java
-public class MapperProxy<T> implements InvocationHandler, Serializable {
-    @Override
-    public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
-        try {
-            if (Object.class.equals(method.getDeclaringClass())) {
-                return method.invoke(this, args);
-            } else if (isDefaultMethod(method)) {
-                return invokeDefaultMethod(proxy, method, args);
-            }
-        } catch (Throwable t) {
-            throw ExceptionUtil.unwrapThrowable(t);
-        }
-        // MapperMethod将传入方法的方法名作为statementId，将具体的statement联动
-        final MapperMethod mapperMethod = cachedMapperMethod(method);
-        // 这里传入的sqlSession是sqlSessionTemplate
-        return mapperMethod.execute(sqlSession, args);
-    }
-}
-```
+# 参考
+- [mybatis源码分析(三) mybatis-spring整合源码分析](https://www.cnblogs.com/timfruit/p/11489395.html)
+- [详解 @MapperScan 注解和 @Mapper 注解](https://www.cnblogs.com/muxi0407/p/11847794.html)
+- [MapperFactoryBean的创建](https://blog.csdn.net/weixin_30871701/article/details/95013149)
+- [MybatisAutoConfiguration 分析](https://blog.csdn.net/zhenghuangyu/article/details/90452210)
 
-这样在后续调用mapper的接口时，都会通过mapperMethod来调用sqlSession的接口方法（如：select、selectOne、selectMap、update等方法），而该接口实现已经由`SqlSessionTemplate`替代，最终都会调用到SqlSessionTemplate的代理类`sqlSessionProxy`：
-
-```java
-public class SqlSessionTemplate implements SqlSession, DisposableBean {
-    private final SqlSession sqlSessionProxy;
-
-    public SqlSessionTemplate(SqlSessionFactory sqlSessionFactory, ExecutorType executorType,
-      PersistenceExceptionTranslator exceptionTranslator) {
-
-        notNull(sqlSessionFactory, "Property 'sqlSessionFactory' is required");
-        notNull(executorType, "Property 'executorType' is required");
-
-        this.sqlSessionFactory = sqlSessionFactory;
-        this.executorType = executorType;
-        this.exceptionTranslator = exceptionTranslator;
-        // 调用SqlSession接口方法时，都会调用到该代理的方法，先执行拦截器逻辑，再执行方法调用
-        this.sqlSessionProxy = (SqlSession) newProxyInstance(
-            SqlSessionFactory.class.getClassLoader(),
-            new Class[] { SqlSession.class },
-            new SqlSessionInterceptor());
-  }
-
-    private class SqlSessionInterceptor implements InvocationHandler {
-        @Override
-        public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
-            // 获取真实的sqlSession对象
-            SqlSession sqlSession = getSqlSession(
-                SqlSessionTemplate.this.sqlSessionFactory,
-                SqlSessionTemplate.this.executorType,
-                SqlSessionTemplate.this.exceptionTranslator);
-            try {
-                // 执行sqlSession对象的真正接口实现，以DefaultSqlSession的实现执行具体statement
-                Object result = method.invoke(sqlSession, args);
-                if (!isSqlSessionTransactional(sqlSession, SqlSessionTemplate.this.sqlSessionFactory)) {
-                    // force commit even on non-dirty sessions because some databases require
-                    // a commit/rollback before calling close()
-                    sqlSession.commit(true);
-                }
-                return result;
-                } catch (Throwable t) {
-                Throwable unwrapped = unwrapThrowable(t);
-                if (SqlSessionTemplate.this.exceptionTranslator != null && unwrapped instanceof PersistenceException) {
-                    // release the connection to avoid a deadlock if the translator is no loaded. See issue #22
-                    closeSqlSession(sqlSession, SqlSessionTemplate.this.sqlSessionFactory);
-                    sqlSession = null;
-                    Throwable translated = SqlSessionTemplate.this.exceptionTranslator.translateExceptionIfPossible((PersistenceException) unwrapped);
-                    if (translated != null) {
-                    unwrapped = translated;
-                    }
-                }
-                throw unwrapped;
-            } finally {
-            if (sqlSession != null) {
-                closeSqlSession(sqlSession, SqlSessionTemplate.this.sqlSessionFactory);
-            }
-            }
-        }
-    }
-}
-```
-
-以上SqlSessionInterceptor的拦截逻辑在mapper的接口调用时拦截执行，可以看到里面并没有对具体多个statement的事务控制
-
-而Service方法（@Transactional一般标注在Service层的业务方法上）是Mapper的使用方，可以调用一个/多个Mapper方法，所以最后事务的提交是由TransactionInterceptor调用连接对象commit()方法完成的
-
-由此可见，事务最终的提交还是由Spring的TransactionInterceptor进行管理
+# 重点参考
+- [spring中的mybatis的sqlSession是如何做到线程隔离的？](https://www.cnblogs.com/yougewe/p/10072740.html)

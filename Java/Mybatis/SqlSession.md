@@ -34,7 +34,7 @@ public class App {
 
 以上获取SqlSession的过程中，还涉及了两个新概念：`SqlSessionFactory`、`SqlSessionFactoryBuilder`
 
-# **SqlSessionFactoryBuilder**
+# **1. SqlSessionFactoryBuilder**
 
 SqlSession工厂的建造者类，用于创建全局的SqlSessionFactory
 
@@ -271,7 +271,7 @@ public class MapperRegistry {
 }
 ```
 
-# **SqlSessionFactory**
+# **2. SqlSessionFactory**
 
 会话工厂，用于返回用户`SqlSession`，工厂提供不同的会话开启接口，可以自行决定是由用户还是由DataSource指定返回的SqlSession与JDBC Connection的关系
 
@@ -340,7 +340,7 @@ public class DefaultSqlSessionFactory implements SqlSessionFactory {
 }
 ```
 
-# **SqlSession**
+# **3. SqlSession**
 
 最佳实践生命范围是：请求（线程绑定）、方法范围内（栈封闭）
 
@@ -488,7 +488,7 @@ public class JdbcTransaction {
 }
 ```
 
-# **SqlSession、Connection、Transaction的关系总结**
+# **4. SqlSession、Connection、Transaction的关系总结**
 
 > [解析Mybatis之Sqlsession、Connection和Transaction原理与三者间的关系](https://blog.csdn.net/AiMaiShanHuHai/article/details/102984764)
 
@@ -511,6 +511,10 @@ public class JdbcTransaction {
 
 2. org.apache.ibatis.mapping.StatementType中包含了：STATEMENT、PREPARED、CALLABLE，默认为PREPARED，所以生成的Statement为PreparedStatement
 
+
+# **5. SqlSession在Spring项目中的生命周期**
+
+具体见《Spring整合》文章
 
 # 参考
 - [SqlSession、SqlSessionFactory和SqlSessionFactoryBuilder](https://blog.csdn.net/chris_mao/article/details/48803545)
