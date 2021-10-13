@@ -10,7 +10,7 @@ I/O多路复用，可以理解为在阻塞IO和非阻塞IO之前多添加了一�
 
 以上三种函数分别对应了I/O multiplexing的三种模型，它们仅仅处理了**数据是否准备好**以及**如何通知进程**的问题，仍需要结合阻塞I/O或者非阻塞I/O模式使用，通常结合`非阻塞I/O`使用
 
-> I/O多路复用模型的整个过程有**两个阻塞**，第一个阻塞指的是进程调用select/poll/epoll后的阻塞，这个阻塞是可设置修改的（NULL，0，>0），通常结合`阻塞IO模式`；第二个阻塞指的是，函数监测到有就绪的数据时，调用read()/recefrom()系统调用进行读取，read()/recefrom()通常结合`非阻塞I/O模式`
+> I/O多路复用模型的整个过程有**两个阻塞**，第一个阻塞指的是进程调用select/poll/epoll后的阻塞，这个阻塞是可设置修改的（NULL、0、> 0），通常结合`阻塞IO模式`；第二个阻塞指的是，函数监测到有就绪的数据时，调用read()/recefrom()系统调用进行读取，read()/recefrom()通常结合`非阻塞I/O模式`
 
 这是因为数据并不是一次性发送完毕的，**而且多路复用只会告诉你 fd 对应的 socket 可读了，但不会告诉你有多少的数据可读**
 
@@ -136,6 +136,7 @@ main() {
             case 0:
                 break;
             default:
+                // 遍历fd集合，效率差，这时候数据已经存在于kernel中
                 if (FD_ISSET(sock, &fds)) {
                     // 处理读取，里面有while(1) + 非阻塞的读取，防止某fd数据未发送完毕前可能会导致其他fd的读取阻塞
                     handle_read();
@@ -502,14 +503,23 @@ ET在写事件上可以极大的提升性能，相比LT，它**不需要频繁�
 
 > [epoll的边沿触发模式(ET)真的比水平触发模式(LT)快吗？](https://www.zhihu.com/question/20502870/answer/89738959)
 
-    总体来说，ET处理EPOLLOUT方便高效些，LT不容易遗漏事件、不易产生bug如果server的响应通常较小，不会触发EPOLLOUT，那么适合使用LT，例如redis等。而nginx作为高性能的通用服务器，网络流量可以跑满达到1G，这种情况下很容易触发EPOLLOUT，则使用ET。关于某些场景下ET模式比LT模式效率更好，我有篇文章进行了详细的解释与测试，参看
+> [LT和ET的使用场景](https://blog.csdn.net/dongfuye/article/details/50880251)
+
+    总体来说：
+
+    ET处理EPOLLOUT方便高效些，LT不容易遗漏事件、不易产生bug
+
+    如果server的响应通常较小，不会触发EPOLLOUT，那么适合使用LT，例如redis等
+    
+    而nginx作为高性能的通用服务器，网络流量可以跑满达到1G，这种情况下很容易触发EPOLLOUT，则使用ET
+
 
 ## **3.3 总结**
 
-> [LT和ET的使用场景](https://blog.csdn.net/dongfuye/article/details/50880251)
+从select()的整体视角看来，最大的性能问题出现在：
 
-从select()的整体视角看来，最大的性能问题出现在了：
 - 每次调用select()进行监测时，都需要从用户空间向内核空间传入fd_set，内存拷贝开销巨大
+
 - socket在完成数据准备后，会将进程从**全部socket等待列表**移除，这让进程无法立即感知到是哪些socket就绪，只能通过遍历的方式筛选一遍，效率低
 
 > 本质问题就是：将**进程阻塞和文件描述符集合的维护**耦合在一起，流程难以突破
@@ -529,7 +539,8 @@ ET在写事件上可以极大的提升性能，相比LT，它**不需要频繁�
 - epoll把用户关心的fd上的事件放在**内核的一个事件表(eventpoll)中**，通过eventpoll进行操作，进行解耦
 
     可以做到：
-    1. 避免像select()和poll()一样每次调用都要重复传入fd_set或pollfds
+
+    1. 避免像select()和poll()一样每次调用都要重复传入fd_set或pollfds，可以直接操作内核的eventpoll进行增删改
 
     2. eventpoll本身以红黑树的方式组织加入的epitem结点（epoll下的fd），提升增删的效率，方便快速新增或删除原有的fd；兼顾查找效率，可以**避免添加相同的结点**
 
