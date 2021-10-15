@@ -56,7 +56,9 @@ typedef struct {
 
 `FD_SET(fd, &fds)`：用于在文件描述符集合中增加一个新的文件描述符
 
-在上面伪代码中，共往描述符集合中添加了一个socket和一个文件描述符
+在上面伪代码中，共往描述符集合中添加了一个`listen socket fd`和fds文件集合的备份
+
+> 因为每次select之后都会更新readfds，因此需要backup
 
 ### **3. 调用select()函数监控所有的描述符集合**
 
@@ -303,6 +305,8 @@ epoll()是比select()、poll()更先进的一种模型，是Linux特有的I/O复
 2. 调用epoll_ctl()，修改epoll的兴趣列表
 3. 调用epoll_wait()等待事件，获得事件时即可执行相应操作
 
+> [epoll的各个结构串联](https://blog.csdn.net/davidsguo008/article/details/73556811/)
+
 ### **3.1.1 调用epoll_create(int size)，创建epoll实例**
 
 ```c++
@@ -319,6 +323,15 @@ int epoll_create(int size);
 
 #### **epfd（eventpoll）**
 
+```c++
+struct epitem {
+    struct rb_node rbn; // 红黑树节点
+    struct list_head rdllink; // rdlist就绪列表（双向链表）
+    struct eventpoll *ep; // 指向其所属的eventpoll对象
+    struct epoll_event event; // 期待发送的事件类型
+}
+```
+
 又称为：rbr、eventpoll、内核epoll事件表
 
 `底层实现`：红黑树数据结构实现，提升增删的效率，方便快速新增或删除原有的fd；兼顾查找效率，可以**避免添加相同的结点**
@@ -332,7 +345,7 @@ int epoll_create(int size);
 
 2. 解耦进程阻塞与维护文件描述符的过程，epoll只需要向内核提交一次感兴趣的fd与事件类型即可
 
-### **3.1.2 调用epoll_ctl()，修改epoll的兴趣列表**
+### **3.1.2 调用epoll_ctl()，注册epoll的兴趣列表**
 
 ```c++
 #include <sys/epoll.h>
