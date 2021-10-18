@@ -2,6 +2,8 @@
 
 ![socket和tcp](https://asea-cch.life/upload/2021/10/socket%E5%92%8Ctcp-e82fff58fc2243eb8d70393d91137074.png)
 
+整个过程由**服务器程序**和**操作系统内核**完美配合
+
 # 单/多线程原生态
 
 - `socket()`：产生一个监听类型的socket fd，与客户端连接socket fd区分开来
@@ -29,7 +31,7 @@
 # 重点参考
 - [java BIO/NIO的accept()方法](https://blog.csdn.net/Tom098/article/details/116107072)
 
-- [c++处理客户端请求](https://blog.csdn.net/yang1994/article/details/115717915)
+- [c++处理客户端请求](https://blog.csdn.net/yang1994/article/details/115717915)：包含one connection per thread的阻塞accpet、非阻塞accpet、结合非阻塞accpet的select
 
 - [epoll深度好文](https://blog.csdn.net/davidsguo008/article/details/73556811/)
 
