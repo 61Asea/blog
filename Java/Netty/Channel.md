@@ -63,7 +63,7 @@ public static void main(String[] args) {
 
 # **1. 线程模型**
 
-通过AbstractBoostrap来对netty的线程模型进行一个总览：
+netty与jdk.nio提供了单独的API`bind(int port)`，本质则是调用两个本地方法来使用内核提供的`bind(int port)、listen()`方法启动服务器，并进行监听：
 
 ```java
 public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C extends Channel> implements Clonable {
@@ -79,6 +79,11 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
         // 设置工厂，一般为反射类工厂，调用其工厂方法newChannel()来反射生成对应的channel实例
         this.channelFactory = channelFactory;
         return self();
+    }
+
+    // 
+    public ChannelFuture bind(SocketAddress localAddress) {
+
     }
 
     // 及其重要的方法
@@ -99,6 +104,8 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
     }
 }
 ```
+
+
 
 config().group()：返回boss线程组，一般在此处之前已经生成了多个eventLoop，每个eventLoop都会初始化其selector
 
