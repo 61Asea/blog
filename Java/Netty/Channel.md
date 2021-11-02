@@ -82,8 +82,25 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
     }
 
     // 
-    public ChannelFuture bind(SocketAddress localAddress) {
+    private ChannelFuture doBind(SocketAddress localAddress) {
+        // 初始化NioServerSocketChannel实例对象，为其加入TCP参数和ChannelInitializer，后者会为pipeline的handler链中加入ServerBoostrap.ServerBootstrapAcceptor
+        // ServerBootstrapAcceptor：提供channelRead以处理客户端channel的pipeline构造、属性填充等
+        final ChannelFuture regFuture = initAndRegister();
+        final Channel channel = regFuture.channel();
+        if (regFuture.cause() != null) {
+            return regFuture;
+        }
+    }
 
+    private static void doBind0(final ChannelFuture regFuture, final Channel channel, final SocketAddress localAddress, final ChannelPromise promise) {
+        // 该方法会驱动NioServerSocketChannel的NioEventLoop进行自循环，以不断的处理其队列的任务，兼顾阻塞select()系统调用
+        channel.eventLoop().execute(() -> {
+            if (regFuture.isSuccess()) {
+                channel.bind(localAddress, promise).addListener(ChannelFutureListener.CLOSE_ON_FAILURE);
+            } else {
+                promise.setFailure(regFuture.cause());
+            }
+        });
     }
 
     // 及其重要的方法
@@ -105,6 +122,93 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
 }
 ```
 
+ServerBoostrap：
+
+```java
+public class ServerBoostrap extends AbstractBoostrap<ServerBootstrap, ServerChannel> {
+    // 在main()方法中设置的各个属性
+    // 客户端channel的tcp选项
+    private final Map<ChannelOption<?>, Object> childOptions = new LinkedHashMap<ChannelOption<?>, Object>();
+    private final Map<AttributeKey<?>, Object> childAttrs = new ConcurrentHashMap<AttributeKey<?>, Object>();
+    private final ServerBootstrapConfig config = new ServerBootstrapConfig(this);
+    // 客户端channel对应的线程组，如果使用group(EventLoopGroup)的话则与服务端线程组共用
+    private volatile EventLoopGroup childGroup;
+    // 客户端channel对应的ChannelInitializer，在后续注册方法channelRegistered时机触发
+    private volatile ChannelHandler childHandler;
+
+    // 初始化NioServerSocketChannel
+    @Override
+    void init(Channel channel) {
+        setChannelOptions(channel, newOptionsArray(), logger);
+        setAttributes(channel, attrs0().entrySet().toArray(EMPTY_ATTRIBUTE_ARRAY));
+
+        // 获得listen socket fd的pipeline
+        ChannelPipeline p = channel.pipeline();
+
+        final EventLoopGroup currentChildGroup = childGroup;
+        final ChannelHandler currentChildHandler = childHandler;
+        final Entry<ChannelOption<?>, Object>[] currentChildOptions;
+        synchronized (childOptions) {
+            currentChildOptions = childOptions.entrySet().toArray(EMPTY_OPTION_ARRAY);
+        }
+        final Entry<AttributeKey<?>, Object>[] currentChildAttrs = childAttrs.entrySet().toArray(EMPTY_ATTRIBUTE_ARRAY);
+
+        // 为服务器监听Channel的pipeline添加多一个handler
+        // headContext -> 该channelInitializer -> tailContext
+        p.addLast(new ChannelInitializer<Channel>() {
+            @Override
+            public void initChannel(final Channel ch) {
+                final ChannelPipeline pipeline = ch.pipeline();
+                ChannelHandler handler = config.handler();
+                if (handler != null) {
+                    pipeline.addLast(handler);
+                }
+
+                // 驱动服务端线程的自循环，这里是第一次驱动
+                ch.eventLoop().execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        pipeline.addLast(new ServerBootstrapAcceptor(
+                                ch, currentChildGroup, currentChildHandler, currentChildOptions, currentChildAttrs));
+                    }
+                });
+            }
+        });
+    }
+
+    private static class ServerBoostrapAcceptor extends ChannelInBoundHandlerAdapter {
+        // ...
+
+         @Override
+        @SuppressWarnings("unchecked")
+        public void channelRead(ChannelHandlerContext ctx, Object msg) {
+            final Channel child = (Channel) msg;
+
+            child.pipeline().addLast(childHandler);
+
+            setChannelOptions(child, childOptions, logger);
+            setAttributes(child, childAttrs);
+
+            try {
+                // 将监听channel获得的msg（本质上商NioSocketChannel）注册到工作线程组中
+                // 工作线程组会根据chooser选择eventloop，来与channel进行绑定
+
+                // 该register方法最终到达Channel.Unsafe层面的注册，在Unsafe层面的注册会再驱动子线程中的eventLoop驱动起来，后续会分析到
+                childGroup.register(child).addListener(new ChannelFutureListener() {
+                    @Override
+                    public void operationComplete(ChannelFuture future) throws Exception {
+                        if (!future.isSuccess()) {
+                            forceClose(child, future.cause());
+                        }
+                    }
+                });
+            } catch (Throwable t) {
+                forceClose(child, t);
+            }
+        }
+    }
+}
+```
 
 
 config().group()：返回boss线程组，一般在此处之前已经生成了多个eventLoop，每个eventLoop都会初始化其selector
