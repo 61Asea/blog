@@ -1,128 +1,20 @@
 # Netty：Channel
 
-当netty应用程序（应用层）从**全连接队列**（TCP层接口）中`accpet()`得到`client socket fd`，会通过以下引导代码进行包装：
+netty将server listen fd和client socket fd进行包装，使得我们可以更加方便地操作底层网络API：
+- NioServerSocketChannel
+- NioSocketChannel
 
-- 服务器Channel：指定类以初始化服务器channel对象，根据系统来选择
+当然Channel不仅限于句柄，还结合了Reactor线程模型与底层jdk.nio相关内容
 
-- ChannelHanlder：此处引导先只添加一个初始化childHandler模板，模板用于后续channel的构造，调用`initChannel()`方法来初始化对应的pipeline及其handler链
+# **1. 基础组件**
 
-```java
-public static void main(String[] args) {
-    // 注意：eventGroup对象生成的同时，其对应的selector也对应生成，至于有多少个selector，则看有多少个eventLoop（此处为1）
-    NioEventLoopGroup eventGroup = new NioEventLoopGroup(1);
+## **1.1 引导**
 
-    ServerBootstrap serverBootstrap = new ServerBootstrap();
-    // 1. 设置引导的channel工厂，传入的NioServerSocketChannel作为listen fd的对应，其内部指定NioSocketChannel作为client socket包装初始化时的反射生成类
-    serverBoostrap.channel(NioSocketChannel.class)
-    // 2. 一般还会添加：TCP选项、netty的worker/boss线程组
-    .group(...).option(...)
-    // 3. 添加childHandler
-    .childHandler(new ChannelInitializer<SocketChannel>() {
-        @Override
-        public void initChannel(SocketChannel ch) throws Exception {
-            ChannelPipeline p = ch.pipeline();
-            // 3.1 新增LoggingChannelHandler
-            p.addLast("logging", new LoggingHandler(LogLevel.DEBUG));
-            if (isProxy) {
-                // 3.2 新增HaProxy对应的解码器，同样也是ChannelHandler
-                p.addLast(new HAProxyMessageDecoderNew());
-            }
-            // 3.3 长度解码器
-            p.addLast(new LengthFieldBasedFrameDecoder(...));
-            // 3.4 根据线程组情况添加自定义的handler
-            if (eventGroups.businessGroup != null) {
-                p.addLast(eventGroups.businessGroup, handlers);
-            } else {
-                p.addLast(handlers);
-            }
-        }
-    });
-}
-```
-
-结合**selector多路复用模型**来分析netty如何构造一个**底层基于jdk.nio**的`朴素Reactor`模型：
-- Handle（listen socket fd、client socket fd）：文件句柄，直接对应`netty.ServerSocketChannel`和`netty.SocketChannel`
-
-- Event Handler：兴趣事件处理器，服务器句柄OP_ACCEPT，客户端句柄OP_READ/OP_WRITE，可直接对应`jdk.nio.Selector#selectionKeys()`中每个key的attachment
-
-    这些事件处理逻辑会以`attachment`的形式包装在一个个`jdk.nio.SelectionKey`中
-    
-    每当selector阻塞返回时，其对应的SelectionKey集合对应全部就绪的事件，可以很轻松的取出它们连结的attchment直接进行操作
-
-- Initiation Dispatcher：兴趣事件管理容器，直接对应`jdk.nio.Selector`
-
-    netty同时运用继承和组合`jdk.nio.Selector`的方式实现`netty.SelectedSelectionKeySetSelector`类
-    
-    在线程模型上，通过`EventLoopGroup`来隔离每个selector，每个线程组对应一个selector，共有boss和worker两种线程组，可以有多个不同的线程组
-
-    - boss的selector：主要管理listen socket fd的OP_ACCEPT兴趣事件，在bind()、listen()方法调用后就将该事件注册到selector中
-
-    - worker的selector：主要管理每个client socket fd的OP_READ（数据就绪），通过OP_ACCEPT事件的event handler把客户端fd注册到worker的selector中
-
-- Synchronous Event Demultiplexer：阻塞句柄实现器，直接对应`netty.SelectedSelectionKeySetSelector#select(long timeout)`方法，底层仍旧是jdk.nio实现
-
-# **1. 线程模型**
-
-netty与jdk.nio提供了单独的API`bind(int port)`，本质则是调用两个本地方法来使用内核提供的`bind(int port)、listen()`方法启动服务器，并进行监听：
-
-```java
-public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C extends Channel> implements Clonable {
-    public B channel(Class<? extends C> channelClass) {
-        // 设置channelFactory到引导中
-        return channelFactory(new ReflectiveChannelFactory<C>(ObjectUtil.checkNotNull(channelClass, "channelClass")));
-    }
-
-    @Deprecated
-    public B channelFactory(ChannelFactory<? extends C> channelFactory) {
-        // ...
-
-        // 设置工厂，一般为反射类工厂，调用其工厂方法newChannel()来反射生成对应的channel实例
-        this.channelFactory = channelFactory;
-        return self();
-    }
-
-    // 
-    private ChannelFuture doBind(SocketAddress localAddress) {
-        // 初始化NioServerSocketChannel实例对象，为其加入TCP参数和ChannelInitializer，后者会为pipeline的handler链中加入ServerBoostrap.ServerBootstrapAcceptor
-        // ServerBootstrapAcceptor：提供channelRead以处理客户端channel的pipeline构造、属性填充等
-        final ChannelFuture regFuture = initAndRegister();
-        final Channel channel = regFuture.channel();
-        if (regFuture.cause() != null) {
-            return regFuture;
-        }
-    }
-
-    private static void doBind0(final ChannelFuture regFuture, final Channel channel, final SocketAddress localAddress, final ChannelPromise promise) {
-        // 该方法会驱动NioServerSocketChannel的NioEventLoop进行自循环，以不断的处理其队列的任务，兼顾阻塞select()系统调用
-        channel.eventLoop().execute(() -> {
-            if (regFuture.isSuccess()) {
-                channel.bind(localAddress, promise).addListener(ChannelFutureListener.CLOSE_ON_FAILURE);
-            } else {
-                promise.setFailure(regFuture.cause());
-            }
-        });
-    }
-
-    // 及其重要的方法
-    final ChannelFuture initAndRegister() {
-        // 1. 开始初始化服务器listen socket fd对应的channel
-        Channel channel = null;
-        try {
-            channel = channelFactory.newChannel();
-            init(channel);
-        } catch (Throwable t) {
-            // ...
-        }
-
-        // 2. 给boss线程组注册channel，为channel注入selector的selectionKeys集合，最后为selector注册channel的OP_ACCEPT兴趣
-        ChannelFuture regFuture = config().group().register(channel);
-        
-        // ....
-    }
-}
-```
-
-ServerBoostrap：
+ServerBoostrap中提供了以下内容：
+- NioServerSocketChannel的TCP选项值、工作组
+- NioServerSocketChannel的初始化方法`init(Channel channel)`
+- NioServerSocketChannel的ChannelInitializer
+    - 提供对NioSocketChannel进行线程组注册的逻辑
 
 ```java
 public class ServerBoostrap extends AbstractBoostrap<ServerBootstrap, ServerChannel> {
@@ -210,6 +102,74 @@ public class ServerBoostrap extends AbstractBoostrap<ServerBootstrap, ServerChan
 }
 ```
 
+jdk.nio提供了单独的API`bind(int port)`，通过本地方法来系统调用内核`bind(int port)、listen()`方法以启动服务器并进行监听
+
+netty由父类AbstractBoostrap提供`bind(int port)`，与jdk.nio类似也是单独API，
+
+```java
+public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C extends Channel> implements Clonable {
+    public B channel(Class<? extends C> channelClass) {
+        // 设置channelFactory到引导中
+        return channelFactory(new ReflectiveChannelFactory<C>(ObjectUtil.checkNotNull(channelClass, "channelClass")));
+    }
+
+    @Deprecated
+    public B channelFactory(ChannelFactory<? extends C> channelFactory) {
+        // ...
+
+        // 设置工厂，一般为反射类工厂，调用其工厂方法newChannel()来反射生成对应的channel实例
+        this.channelFactory = channelFactory;
+        return self();
+    }
+
+    // 
+    private ChannelFuture doBind(SocketAddress localAddress) {
+        // 初始化NioServerSocketChannel实例对象，为其加入TCP参数和ChannelInitializer，后者会为pipeline的handler链中加入ServerBoostrap.ServerBootstrapAcceptor
+        // ServerBootstrapAcceptor：提供channelRead以处理客户端channel的pipeline构造、属性填充等
+        final ChannelFuture regFuture = initAndRegister();
+        final Channel channel = regFuture.channel();
+        // ....
+
+        if (reg.Future.isDone()) {
+            ChannelPromise promise = channel.newPromise();
+            doBind0(regFuture, channel, localAddress, promise);
+            return promise;
+        } else {
+            final PendingRegistrationPromise promise = new PendingRegistrationPromise(channel);
+            regFuture.addListener((future) -> {
+                // ChannelFuture注册一个doBind0()，在操作完成时触发;
+            });
+        }
+    }
+
+    private static void doBind0(final ChannelFuture regFuture, final Channel channel, final SocketAddress localAddress, final ChannelPromise promise) {
+        // 该方法会驱动NioServerSocketChannel的NioEventLoop进行自循环，以不断的处理其队列的任务，兼顾阻塞select()系统调用
+        channel.eventLoop().execute(() -> {
+            if (regFuture.isSuccess()) {
+                channel.bind(localAddress, promise).addListener(ChannelFutureListener.CLOSE_ON_FAILURE);
+            } else {
+                promise.setFailure(regFuture.cause());
+            }
+        });
+    }
+
+    // 极其重要的方法
+    final ChannelFuture initAndRegister() {
+        // 1. 开始初始化服务器listen socket fd对应的channel
+        Channel channel = null;
+        try {
+            channel = channelFactory.newChannel();
+            init(channel);
+        } catch (Throwable t) {
+            // ...
+        }
+
+        // 2. 给boss线程组注册channel，为channel注入selector的selectionKeys集合，最后为selector注册channel的OP_ACCEPT兴趣
+        ChannelFuture regFuture = config().group().register(channel);
+        // ....
+    }
+}
+```
 
 config().group()：返回boss线程组，一般在此处之前已经生成了多个eventLoop，每个eventLoop都会初始化其selector
 
@@ -217,24 +177,316 @@ config.childGroup()：返回worker线程组，如果在引导只传入了一个�
 
 # **2. Channel**
 
+主要介绍两种Channel，它们分别对应jdk.nio中不同的channel，在文件系统上也属于不同的套接字文件句柄范畴：
+- NioServerSocketChannel/EpollServerSocketChannel：server listen fd
+- NioSocketChannel/EpollSocketChannel：client socket fd
+
+它们的父类AbstractNioMessageChannel/AbstractNioChannel包括以下公共成员：
+
+- pipeline：流水线，为该channel的channel handler链条，初始状态下有headContext和tailContext
+- ch：对应底层nio上的channel
+- readInterestOp：兴趣事件selectionKey
+- unsafe：实际上的处理逻辑
+
+    ```java
+    // AbstractChannel.register()，两种channel都会使用的方法，相当重要
+    @Override
+    public final void register(EventLoop eventLoop, final ChannelPromise promise) {
+        // ...
+
+        AbstractChannel.this.eventLoop = eventLoop;
+
+        // 该方法一般由服务器channel进行驱动
+        if (eventLoop.inEventLoop()) {
+            // 服务器channel的初始化和注册流程
+            register0(promise);
+        } else {
+            // 后续服务器channel对新的客户端channel注册流程，因为不在同一个线程，则将其作为任务投递到worker eventloop中
+
+            // 如果是第一次调用worker eventloop的该方法，还会驱动其自循环逻辑的启动
+            try {
+                eventLoop.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        register0(promise);
+                    }
+                });
+            } catch (Throwable t) {
+                // ...
+            }
+        }
+    }
+    ```
+
 ## **2.1 ServerSocketChannel**
 
-NioServerSocketChannel/EpollServerSocketChannel对应server listen fd，用于**监听、接收**客户端请求
+对应server listen fd，用于**监听、接收**客户端**连接**请求
 
-- 初始化该channel对应的nio.selectorProvider，对应单个boss线程组
-- 为listen fd向其selector注册`SelectionKey.OP_ACCEPT`事件
-- 提供listen fd对selector阻塞返回的实现：对client socket fd包装为channel对象，后者可直接对应client socket fd、其绑定eventloop的selector
+ServerSocketChannel绑定并持有eventloop的引用，eventloop的选择器将会为其注册OP_ACCEPT事件，而OP_ACCEPT兴趣事件的attachment则为channel对象本身
 
+具体下发处理逻辑在`AbstractNioUnsafe.read()`，由selector的select阻塞返回触发，它会调用channel的doReadMessages多态实现，而NioServerSocketChannel实现如下：
 
-## **1.2 SocketChannel**
+```java
+// 用于对OP_ACCEPT事件的处理
+@Override
+protected int doReadMessages(List<Object> buf) throws Exception {
+    SocketChannel ch = SocketUtils.accept(javaChannel());
 
-- NioSocketChannel/EpollSocketChannel：对应client socket fd，一般listen fd接收(accept)到三次握手完成的客户端后，会对其client socket fd进行初始化/包装
+    try {
+        if (ch != null) {
+            buf.add(new NioSocketChannel(this, ch));
+            return 1;
+        }
+    } catch (Throwable t) {
+        logger.warn("Failed to create a new channel from an accepted socket.", t);
 
+        try {
+            ch.close();
+        } catch (Throwable t2) {
+            logger.warn("Failed to close a socket.", t2);
+        }
+    }
 
-# **3. ChannelPipeLine**
+    return 0;
+}
+```
 
+具体成员详情参考：
+- pipeline：head -> serverboostrapAcceptor -> tail
+- readInterestOp：OP_ACCEPT
+- unsafe：NioMessageUnsafe
 
+## **2.2 SocketChannel**
+
+对应client socket fd，用于与客户端**读入、写出**数据
+
+具体下发处理逻辑在`NioByteUnsafe.read()`，仍旧由selector的select阻塞返回触发，它会调用channel的doReadBytes的多态实现，NioSocketChannel的具体实现如下：
+
+```java
+@Override
+    protected int doReadBytes(ByteBuf byteBuf) throws Exception {
+        final RecvByteBufAllocator.Handle allocHandle = unsafe().recvBufAllocHandle();
+        allocHandle.attemptedBytesRead(byteBuf.writableBytes());
+        // 传入nio.channel，通过I/O流来读取数据到byteBuf中
+        return byteBuf.writeBytes(javaChannel(), allocHandle.attemptedBytesRead());
+    }
+```
+
+具体成员详情参考：
+- pipeline：head -> logging -> engthfielddecoder -> 自定义handler -> tail
+- readInterestOp：OP_READ/OP_WRITE
+- unsafe：NioByteUnsafe
+
+## **2.3 ChannelPipeLine和ChannelHandlerContext的相互配合**
+
+ChannelPipeline与Channel相互持有对方的引用：
+
+```java
+public class AbstractChannel {
+    private final DefaultChannelPipeline pipeline;
+
+    public DefaultChannelPipeline pipeline() {
+        return this.pipeline;
+    }
+}
+```
+
+ChannelPipeline旨在维护ChannelHandlerContext类型节点的双向队列，提供：
+- 节点入队、替换节点等结构管理的API
+- 头、尾节点的实现
+- 配合ChannelHandlerContext实现队列`从头到尾`的消息流转
+
+```java
+public class DefaultChannelPipeline implements ChannelPipeline {
+    // 双向队列
+    final AbstractChannelHandlerContext head;
+    final AbstractChannelHandlerContext tail;
+
+    private final Channel channel;
+
+    protected DefaultChannelPipeline(Channel channel) {
+        this.channel = ObjectUtils.checkNotNull(channel, "channel");
+
+        // 用于处理出站消息
+        head = new HeadContext(this);
+        // 用于处理入站消息
+        tail = new TailContext(this);
+
+        head.next = tail;
+        tail.prev = head;
+    }
+
+    @Override
+    public final ChannelPipeline addLast(ChannelHander handler) {
+        return addLast(null, handler);
+    }
+
+    @Override
+    public final ChannelPipeline addLast(String name, ChannelHandler handler) {
+        return addLast(null, name, handler);
+    }
+
+    @Override
+    public final ChannelPipeline addLast(EventExecutorGroup group, String name, ChannelHandler handler) {
+        final AbstractChannelHandlerContext newCtx;
+        synchronized (this) {
+            checkMultiplicity(handler);
+
+            // 将handler包装为一个ChannelHandlerContext
+            newCtx = newContext(group, filterName(name, handler), handler);
+
+            // 加在队列的倒数第二位置，即tail节点之前
+            addLast0(newCtx);
+
+            // ...
+        }
+        return this;
+    }
+
+    // 各种各样的fireChanellXXXX()方法，传入head进行从头到尾的流转
+    @Override
+    public final ChannelPipeline fireChannelActive() {
+        // 以active时机为例，传入head之后，由AbstractChannelHandlerContext配合进行流转
+        AbstractChannelHandlerContext.invokeChannelActive(head);
+        return this;
+    }
+}
+```
+
+ChannelHandlerContext可以根据情况来控制数据在**ChannelHandlerContext节点双向队列**的流转：
+
+- 可从某个节点开始进行流转：invokeChannelXXX()系列的静态方法
+
+    > 需要区分：invokeChannelXXX()系列的实例方法用于触发内部handler的某时机的具体方法
+
+- 从当前节点开始进行流程：fireChannelXXX()系列的实例方法
+
+- 可控制流转的方向，inbound则往next方向，outbound则往prev方向
+
+    > findContextOutbound() / findContextInbound()：出站、入站信息流转的关键方法，会筛选出ChannelOutboundHandler和ChannelInboundHandler
+
+```java
+abstract class AbstractChannelHandlerContext implements ChannelHandlerContext {
+    // 当前节点的下一个节点
+    volatile AbstractChannelHandlerContext next;
+    // 当前节点的上一个节点
+    volatile AbstractChannelHandlerContext prev;
+    // 对应channel
+    private final DefaultChannelPipeline pipeline;
+    // 对应channel所在的eventloop
+    final EventExecutor executor;
+
+    AbstractChannelHandlerContext(DefaultPipeline pipeline, EventExecutor executor, String name, Class<? extends ChannelHandler> handlerClass) {
+        // ...
+        this.pipeline = pipeline;
+        this.executor = executor;
+    }
+
+    private AbstractChannelHandlerContext findContextInbound(int mask) {
+        AbstractChannelHandlerContext ctx = this;
+        // 获得当前的eventloop
+        EventExecutor currentExecutor = executor();
+        do {
+            ctx = ctx.next;
+        } while (skipContext(ctx, currentExecutor, mask, MASK_ONLY_INBOUND));
+        return ctx;
+    }
+
+    private AbstractChannelHandlerContext findContextOutbound(int mask) {
+        // findContextInbound一样的操作，遍历的方向相反而已
+        do {
+            ctx = ctx.prev;
+        } while(skipContext(ctx, currentExecutor, mask, MASK_ONLY_OUTBOUND));
+        return ctx;
+    }
+
+    // 用于筛除某种类型的Handler，具体由mask的值决定，位运算筛除
+    private static boolean skipContext(AbstractChannelHandlerContext ctx, EventExecutor currentExecutor, int mask, int onlyMask) {
+    }
+
+    // 当前节点开始，往下一个节点开始流转
+    @Override
+    public ChannelHandlerContext fireChannelRead(final Object msg) {
+        // findContextInBound(MASK_CHANNEL_READ)返回下一个入站handler
+        // 调用静态系列方法，传入下一个节点，表示从该节点继续往下遍历
+        invokeChannelRead(findContextInBound(MASK_CHANNEL_READ), msg);
+        return this;
+    }
+
+    // 静态方法系列
+    static void invokeChannelRead(final AbstractChannelHandlerContext next, Object msg) {
+        final Object m = next.pipeline.touch(ObjectUtil.checkNotNull(msg, "msg"), next);
+        EventExecutor executor = next.executor();
+        if (executor.inEventLoop()) {
+            // 调用invokeChannelRead实例方法，内部会调用真实的handler实现
+            next.invokeChannelRead(m);
+        } else {
+            executor.execute(new Runnable() {
+                @Override
+                public void run() {
+                    next.invokeChannelRead(m);
+                }
+            });
+        }
+    }
+
+    // 实例方法系列
+    private void invokeChannelRead(Object msg) {
+        if (invokeHandler()) {
+            try {
+                // 调用具体handler的channelRead方法
+                ((ChannelInboundHandler) handler()).channelRead(this, msg);
+            } catch (Throwable t) {
+                invokeExceptionCaught(t);
+            }
+        } else {
+            fireChannelRead(msg);
+        }
+    }
+}
+```
+
+**ChannelHandlerContext节点的双向队列**，用于在selector阻塞返回处理SelectionKeys的过程，每个节点都有对应时机的处理逻辑：
+
+```java
+// 以NioServerSocketChannel的ServerBoostrapAcceptor为例
+@Override
+@SuppressWarnings("unchecked")
+public void channelRead(ChannelHandlerContext ctx, Object msg) {
+    final Channel child = (Channel) msg;
+
+    // 为NioSocketChannel添加channelInitializer
+    child.pipeline().addLast(childHandler);
+
+    // 设置客户端channel的tcp参数等
+    setChannelOptions(child, childOptions, logger);
+    setAttributes(child, childAttrs);
+
+    try {
+        // 注册channel到worker工作组中，驱动对应eventloop的自循环启动
+        childGroup.register(child).addListener(new ChannelFutureListener() {
+            @Override
+            public void operationComplete(ChannelFuture future) throws Exception {
+                if (!future.isSuccess()) {
+                    forceClose(child, future.cause());
+                }
+            }
+        });
+    } catch (Throwable t) {
+        forceClose(child, t);
+    }
+
+    // 没有调用ctx.fireXXX()，pipeline到此流转结束
+}
+```
 
 # 参考
 - [Netty源码分析(一)：客户端操作之channel()](https://blog.csdn.net/qq_41594698/article/details/89738304)
 - [Netty源码分析(四)：关于ChannelPipeline和addLast](https://blog.csdn.net/qq_41594698/article/details/89894135)
+
+# 参考
+- [线程模型简单总结](https://blog.csdn.net/scying1/article/details/90755438)
+
+# 重点参考
+- [Netty中的那些坑](https://www.cnblogs.com/rainy-shurun/p/5213086.html)：讲解netty线程模型下，使用不当导致的各种坑
+- [Netty 防止内存泄漏措施](https://www.infoq.cn/article/olLlvGFx*Kr0UV9K7tez)：堆积任务导致问题的分析，包括解决方案
