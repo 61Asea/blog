@@ -130,4 +130,4 @@ SSL/TLS协议基本流程：
 
 - [混合加密流程](https://zhuanlan.zhihu.com/p/157502520)
 - [iOS密码学及签名机制](https://www.jianshu.com/p/04205346e0e0)
-
+- [HTTPS协议详解(四)：TLS/SSL握手过程](https://blog.csdn.net/hherima/article/details/52469674)

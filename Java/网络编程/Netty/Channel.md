@@ -224,7 +224,7 @@ config.childGroup()：返回worker线程组，如果在引导只传入了一个�
 
 ServerSocketChannel绑定并持有eventloop的引用，eventloop的选择器将会为其注册OP_ACCEPT事件，而OP_ACCEPT兴趣事件的attachment则为channel对象本身
 
-具体下发处理逻辑在`AbstractNioUnsafe.read()`，由selector的select阻塞返回触发，它会调用channel的doReadMessages多态实现，而NioServerSocketChannel实现如下：
+具体下发处理逻辑在`AbstractNioMessageChannel#NioMessageUnsafe.read()`，由selector的select阻塞返回触发，它会调用channel的doReadMessages多态实现，而NioServerSocketChannel实现如下：
 
 ```java
 // 用于对OP_ACCEPT事件的处理
@@ -260,7 +260,7 @@ protected int doReadMessages(List<Object> buf) throws Exception {
 
 对应client socket fd，用于与客户端**读入、写出**数据
 
-具体下发处理逻辑在`NioByteUnsafe.read()`，仍旧由selector的select阻塞返回触发，它会调用channel的doReadBytes的多态实现，NioSocketChannel的具体实现如下：
+具体下发处理逻辑在`AbstractNioByteChannel#NioByteUnsafe.read()`，仍旧由selector的select阻塞返回触发，它会调用channel的doReadBytes的多态实现，NioSocketChannel的具体实现如下：
 
 ```java
 @Override
