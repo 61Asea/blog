@@ -1,26 +1,30 @@
 # tomcat
 
-Connector连接器、Container容器
+核心组件：Connector连接器、Container容器
+
+Connector职责：
+
+- EndPoint（Acceptor、Processor）：`网络I/O模型`和`应用层I/O模型框架`的选型，解析处理应用层协议，封装为一个Request对象
+
+    > netty：以JDK NIO作为网络I/O模型（同步非阻塞I/O），在应用层面上自实现**异步事件驱动框架**以反馈在所有的I/O操作上，用户I/O操作调用都是立即返回（异步I/O）
+
+- Adapter：将Request转换为ServletRequest，将Response转换为ServletResponse
+
+Container职责：路由到对应的servlet，处理`业务逻辑`
 
 # **1. Connector**
 
-关注三个核心功能：
-
-- `网络I/O模型`和`应用层I/O模型框架`的选型
-
-    netty，以JDK NIO作为网络I/O模型（同步非阻塞I/O），在应用层面上自实现**异步事件驱动框架**以反馈在所有的I/O操作上，用户I/O操作调用都是立即返回（异步I/O）
-
-- 解析处理应用层协议，封装为一个Request对象
-
-- 将Request转换为ServletRequest，将Response转换为ServletResponse
-
-通过`EndPoint`、`Processor`、`Adapter`共三个组件来完成以上功能，三个组件之间通过抽象接口进行交互，流程为：
+具体分为`EndPoint`、`Processor`、`Adapter`三个组件完成功能，流程为：
 
 1. EndPoint与底层socket打交道，负责**提供字节流**给Processor
+
+
 
 2. Processor负责将字节流解析为**Tomcat定义的Request对象**，并传递给Adapter
 
 3. Adapter负责将Request对象转换为J2EE Servlet标准下的ServletRequest，提供对container**service()**方法的同名包装方法，作为connector和container之间的**交互接口**
+
+![tomcat流程图](https://asea-cch.life/upload/2021/11/tomcat%E6%B5%81%E7%A8%8B%E5%9B%BE-09a80a9394b243f6900706ac7265c583.png)
 
 ## **1.1 EndPoint**
 
@@ -32,6 +36,8 @@ public class NioEndPoint extends AbstractJsseEndPoint<NioChannel, SocketChannel>
 
 }
 ```
+
+## **1.2 Processor**
 
 ## **1.3 Adapter**
 
@@ -70,15 +76,25 @@ public interface ServletRequest {
 整体流程：
 
 NioEndPoint#SocketProcessor#doRun()
+
 ->
+
 AbstractProtocol#ConnectionHandler#process(SocketWrapperBase<?>, SocketEvent)
+
 ->
+
 AbstractProcessorLigth#process(SocketWrapperBase<?>, SocketEvent)
+
 ->
+
 Http11Processor#service(SocketWrapperBase<?>)
+
 -> 
+
 CoyoteAdapter.service(Request req, Response res) 
+
 ->
+
 与container做交互（待补充）
 
 在调用栈的第二层出现了`AbstractProtocol`，体现了它使用组合的方式将EndPoint和Processor作为一个整体，提供它们封装和**交互**细节
