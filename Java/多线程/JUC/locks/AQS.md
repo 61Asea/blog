@@ -2,11 +2,11 @@
 
 AQS，抽象队列同步器，是JDK为”线程同步“提供了一套通用的机制，来**管理同步状态（synchronization state）、阻塞/唤醒线程、管理等待队列**
 
-![AQS功能](http://8.135.101.145/upload/2021/05/19073098-523c9713fd239283-6e1bcb02c5df434bbc650019e9e7d11c.webp)
+![AQS功能](https://asea-cch.life/upload/2021/05/19073098-523c9713fd239283-6e1bcb02c5df434bbc650019e9e7d11c.webp)
 
 基于它可以写出JAVA中的很多同步器类，如ReentrantLock、CountDownLatch、Semaphore、CyclicBarrier，这些同步器的主要区别就是对**同步状态（synchronization state）的定义不同**
 
-![AQS衍生同步器](http://8.135.101.145/upload/2021/05/19073098-f290953d9b6df0f2-f05809a233e641448d26509a8e3b5be3.webp)
+![AQS衍生同步器](https://asea-cch.life/upload/2021/05/19073098-f290953d9b6df0f2-f05809a233e641448d26509a8e3b5be3.webp)
 
 AQS是一种典型的模板方法设计模式，父类定义好骨架和内部操作细节，具体规则由子类去实现
 
@@ -45,20 +45,20 @@ AQS是一种典型的模板方法设计模式，父类定义好骨架和内部�
 - 访问资源的线程如何进行并发管理（等待队列）
 - 线程如何退出（超时/中断）
 
-![AQS衍生锁](http://8.135.101.145/upload/2021/05/19073098-5277b2a012368215-913c2805b9ea49fea42a69d5b6eba939.webp)
+![AQS衍生锁](https://asea-cch.life/upload/2021/05/19073098-5277b2a012368215-913c2805b9ea49fea42a69d5b6eba939.webp)
 
 常见同步器对资源的定义：
 | 同步器 | synchronization state的定义 |
 | ------ | ------ |
 | ReentrantLock | 资源表示独占锁，0表示锁可用；1表示被占用；N表示重入的次数 |
 | CountDownLatch | 资源表示倒数计数器，0表示计数器为零，所有线程都可用访问资源；N表示计数器未归零，所有线程都需要阻塞 |
-| Semaphore | 资源表示信号量或令牌，0表示没有令牌可用，所有线程都得阻塞；大于0表示有令牌可用，线程每获得一个令牌，state减1，反之则加1 |
+| Semaphore | 资源表示信号量或令牌，0表示没有令牌可用，获取资源的线程都得阻塞等待；大于0表示有令牌可用，线程每获得一个令牌，state减1，反之则加1 |
 | ReentrantReadWriteLock | 表示共享的读锁和独占的写锁，state在逻辑上被分成两个16位unsigned short，分别记录读锁被多少线程使用和写锁被重入的次数 |
 | ThreadPoolExecutor.Worker | 类似ReentrantLock，但是是不可重入的 |
 
 ### **1.2 模板方法**
 
-    AQS暴露以下API来让用户解决1.1中提出的第二个问题，资源是否可以被访问
+> AQS暴露以下API来让用户解决1.1中提出的第二个问题，资源是否可以被访问
 
 | 钩子方法 | 描述 |
 | -----| ----- |
@@ -68,15 +68,27 @@ AQS是一种典型的模板方法设计模式，父类定义好骨架和内部�
 | tryReleaseShared | 共享释放（资源数）|
 | isHeldExclusively | 是否排它状态 |
 
-以ReentranLock为例：
+**以ReentranLock为例：**
 
-ReentrantLock是通过组合NonfairSync/FairSync的方式，并重写Lock接口方法的方式，做到统一暴露Lock接口方法tryLock()和lock()的效果
+ReentrantLock是通过组合NonfairSync/FairSync，并重写Lock接口方法的方式，做到统一暴露Lock接口方法tryLock()和lock()的效果，tryLock()和lock()的具体实现中，调用的是AQS暴露的接口acquire(), acquire()的实现中使用了具体的tryAcquire模板方法
 
-而在ReentrantLock的tryLock()和lock()的具体实现中，调用的是AQS暴露的接口acquire(), acquire()的实现中使用了具体的tryAcquire模板方法，该模板方法具体实现在NonfairSync和FairSync中
+该模板方法具体实现在NonfairSync和FairSync中：
 
-lock/tryLock(Lock接口) -> Sync的lock模板方法（NonfairSync/FairSync对lock模板实现） -> AQS的父类方法acquire -> AQS的Acquire模板方法（NonfairSync/FairSync对tryAcquire模板的实现）
+    lock/tryLock(Lock接口) 
 
-    不同的AQS实现对于arg的传入含义不同，这也解决第一个问题：如何定义资源
+    -> 
+
+    Sync的lock模板方法（NonfairSync/FairSync对lock模板实现） 
+
+    -> 
+
+    AQS的父类方法acquire 
+
+    -> 
+
+    AQS的Acquire模板方法（NonfairSync/FairSync对tryAcquire模板的实现）
+
+> 不同的AQS实现对于arg的传入含义不同，这也解决第一个问题：如何定义资源
 
 ### **1.3 暴露方法**
 
