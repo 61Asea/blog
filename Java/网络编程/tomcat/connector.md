@@ -647,6 +647,39 @@ public class ThreadPoolExecutor extends java.util.concurrent.ThreadPoolExecutor 
 
 ## **2.2 SocketProcessor**
 
+```java
+protected class SocketProcessor extends SocketProcessorBase<NioChannel> {
+    public SocketProcessor(SocketWrapperBase<NioChannel> socketWrapper, SocketEvent event) {
+        super(socketWrapper, event);
+    }
+
+    // 父类继承了Runnable，run()实现中加入了对socketWrapper对象的互斥锁
+    @Override
+    protected void doRun() {
+        NioChannel socket = socketWrapper.getSocket();
+        Poller poller = NioEndpoint.this.poller;
+        if (poller == null) {
+            socketWrapper.close();
+            return;
+        }
+
+        try {
+            int handshake = -1;
+            try {
+                if (socket.isHandshakeComplete()) {
+                    handshake = 0;
+                } else if (event == SocketEvent.STOP || event == SocketEvent.DISCONNECT || event == SocketEvent.ERROR) {
+                    handshake = -1;
+                } else {
+                    handshake = socket.handshake(event == SocketEvent.OPEN_READ, event == SocketEvent.OPEN_WRITE);
+                    event = SocketEvent.OPEN_READ;
+                }
+            }
+        }
+    }
+}
+```
+
 # **3. Adapter**
 
 连接器需要对接的是标准的Servlet容器，Servlet的service方法遵循Servlet规范下，只能接收标准化的`ServletRequest`和`ServletResponse`:
