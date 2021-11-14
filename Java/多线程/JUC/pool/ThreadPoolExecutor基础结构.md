@@ -196,10 +196,74 @@ public class ThreadPoolExecutor extends AbstractExecutorService {
 
 **workQueue**
 
-任务队列，用来存放等待执行的任务，根据策略的不同，Executors提供了四种不同的阻塞队列
+任务队列，用来存放等待执行的任务，根据策略的不同，Executors提供了四种不同的阻塞队列：
+
 1. 不含容量的同步队列SynchronousQueue，它不保存任务，一直创建新的线程进行执行，直到达到maxiumPoolSize，执行拒绝策略
+
 2. 无界队列LinkedBlockingQueue，可以一直添加任务，直到程序OOM，执行任务顺序为FIFO
+
+    道格李在ThreadPoolExecutor中对`无界队列`的理解：
+
+    ```java
+    /*
+    * <li><em> Unbounded queues.</em> Using an unbounded queue (for
+    * example a {@link LinkedBlockingQueue} without a predefined
+    * capacity) will cause new tasks to wait in the queue when all
+    * corePoolSize threads are busy. Thus, no more than corePoolSize
+    * threads will ever be created. (And the value of the maximumPoolSize
+    * therefore doesn't have any effect.)  This may be appropriate when
+    * each task is completely independent of others, so tasks cannot
+    * affect each others execution; for example, in a web page server.
+    * While this style of queuing can be useful in smoothing out
+    * transient bursts of requests, it admits the possibility of
+    * unbounded work queue growth when commands continue to arrive on
+    * average faster than they can be processed.  </li>
+    **/
+    ```
+
+    当所有corePoolSize线程都忙时，使用无界队列（没有预定义容量的link LinkedBlockingQueue）将导致新任务在当前在队列中等待，而不是新起非核心线程去执行任务，这样池中线程数**不会超过corePoolSize**。因此，maximumPoolSize的值没有任何影响
+    
+    当每个任务完全独立于其他任务时，这可能是合适的，因此任务不会影响其他任务的执行；例如，在网页服务器中
+    
+    虽然这种排队方式有助于消除瞬时的请求突发，但当命令继续以平均比处理速度更快的速度到达时，工作队列可能会无限增长
+
 3. 有界队列ArrayBlockingQueue，执行任务顺序为FIFO
+
+    道格李在ThreadPoolExecutor中对`有界队列`的理解：
+
+    ```java
+    /*
+    * <li><em>Bounded queues.</em> A bounded queue (for example, an
+    * {@link ArrayBlockingQueue}) helps prevent resource exhaustion when
+    * used with finite maximumPoolSizes, but can be more difficult to
+    * tune and control.  Queue sizes and maximum pool sizes may be traded
+    * off for each other: Using large queues and small pools minimizes
+    * CPU usage, OS resources, and context-switching overhead, but can
+    * lead to artificially low throughput.  If tasks frequently block (for
+    * example if they are I/O bound), a system may be able to schedule
+    * time for more threads than you otherwise allow. Use of small queues
+    * generally requires larger pool sizes, which keeps CPUs busier but
+    * may encounter unacceptable scheduling overhead, which also
+    * decreases throughput.  </li>
+    **/
+    ```
+
+    有界队列（ArrayBlockingQueue）在与有限的maximumPoolSizes一起使用时**有助于防止资源耗尽，但可能更难调整和控制**
+    
+    队列大小（queue size）和最大池大小（pool maximum）可以相互权衡：
+
+    - 大队列和小池：
+    
+        可以最大限度地减少CPU使用、操作系统资源和上下文切换开销，但也可能**导致人为的低吞吐量**。如果任务经常阻塞（例如，如果它们是I/O绑定的），系统可能能够为更多的线程安排时间，而不是您允许的时间
+
+        > 大队列容易造成程序任务堆积，小池的消费力较差
+
+    - 小队列和大池：
+    
+        使用小队列通常需要更大的池大小，这使CPU更繁忙，但可能会遇到不可接受的调度开销，这也会降低吞吐量
+
+        > 大池可以容纳更多工作线程，小队列更容易触发新线程的产生
+
 4. 优先级队列PriorityBlockingQueue，执行任务顺序按照优先级大小来执行任务
 
 **keepAliveTime**

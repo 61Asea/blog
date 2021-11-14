@@ -1,24 +1,24 @@
 # Tomcat：Connector
 
-> 本章着重介绍connector，Container的职责是路由到对应的servlet来处理`业务逻辑`
+> 本章着重介绍connector，后面介绍的Container，其职责是将请求路由到对应的servlet来处理`业务逻辑`
 
 Connector职责：
 
-- EndPoint（Acceptor、Processor）：**网络I/O模型**和**应用层I/O模型框架**的选型，解析处理应用层协议，封装为一个Request对象
+- EndPoint（Acceptor、Poller、Processor）：**网络I/O模型**和**应用层I/O模型框架**的选型，解析处理应用层协议，封装为一个Request对象
 
     > netty：以JDK NIO作为网络I/O模型（同步非阻塞I/O），在应用层面上自实现**异步事件驱动框架**以反馈在所有的I/O操作上，用户I/O操作调用都是立即返回（异步I/O）
 
 - Adapter：将Request转换为ServletRequest，将Response转换为ServletResponse
 
-具体分为`EndPoint`、`SocketProcessor`、`Adapter`三个组件完成功能：
+EndPoint可以再具体分为`EndPoint`、`SocketProcessor`、`Adapter`，这三个组件协作完成以下功能：
 
 - NioEndPoint：与底层socket打交道，处理selector的服务器监听、客户端读事件，并提供HttpSocketProcessor同步处理I/O操作
 
-    - Acceptor：对应listen socket fd，使用系统内核提供的selector阻塞监听OP_ACCEPT事件，取出client socket fd对应的SocketChannel，包装成**PollEvent**放入到Poller的队列中
+    - Acceptor：对应listen socket fd，**默认使用阻塞式I/O**取出client socket fd对应的SocketChannel，包装成**PollEvent**放入到Poller的队列中
 
     - Poller：内置selector监听注册的client socket fd集合，当selector阻塞返回时，遍历SelectionKeys将就绪的socket包装成**SocketProcessor**，并提交该任务到Worker线程池中
 
-    - SocketProcessor：由Worker线程池中的某个线程阻塞处理，负责读入字节流，解析为**Tomcat定义的Request对象**后传递给Adapter
+    - SocketProcessor：由Worker线程池中的某个线程**阻塞处理**，负责读入字节流，解析为**Tomcat定义的Request对象**后传递给Adapter
 
 - Adapter：负责将Request对象转换为J2EE Servlet标准下的ServletRequest，提供对container#**service()**方法的同名包装方法，作为connector和container之间的**交互接口**
 
@@ -45,7 +45,7 @@ public abstract class AbstractEndPoint<S, U> {
 }
 ```
 
-NioEndPoint组合独立Poller异步线程和Acceptor异步线程，Poller先启动，Acceptor再启动，详情见`NioEndPoint#startInternal()`
+NioEndPoint组合了独立的Poller与Acceptor两个异步线程，Poller先启动，Acceptor再启动，详情见`NioEndPoint#startInternal()`
 
 > startInternal()方法的调用与Boostrap、ProtocolHandler、AbstractProtocol相关
 
@@ -107,6 +107,11 @@ public class NioEndPoint extends AbstractJsseEndPoint<NioChannel, SocketChannel>
     public void startInternal() throws Exception {
         // ...
 
+        // 创建worker线程池
+        if (getExecutor == null) {
+            createExecutor();
+        }
+
         // 先启动Poller异步线程
         poller = new Poller();
         Thread pollerThread = new Thread(poller, getName());
@@ -124,7 +129,7 @@ public class NioEndPoint extends AbstractJsseEndPoint<NioChannel, SocketChannel>
 
 netty：boss线程组中的NioEventLoop（NioServerSocketChannel）接收新连接，以**投递任务**的形式将新连接业务投递到worker线程组的某个线程队列中，并**驱动该线程的启动**
 
-tomcat：服务器监听到新连接到来，同样以**投递任务**的方式进行，将新连接socket对应的fd注册到poller的选择器
+tomcat：服务器监听到新连接到来，同样以**投递任务**的方式进行，任务的具体内容是将新连接socket对应的fd注册到poller的选择器
 
 > 唯一不同点在于poller随着tomcat启动而启动，且poller线程为**独立线程**，这在1.2会继续分析
 
@@ -141,7 +146,7 @@ public class Acceptor<U> implements Runnable {
     // 控制stop方法的执行，只有run方法结束，stop才会阻塞返回
     private final CountDownLatch stopLatch = new CountDownLatch(1);
     // Acceptor的可视状态
-    protected voaltile AcceptorState state = AcceptorState.NEW;
+    protected volatile AcceptorState state = AcceptorState.NEW;
     // ...
 
     @Override
@@ -256,7 +261,8 @@ protected boolean setSocketOptions(SocketChannel socket) {
             socketWrapper.setReadTimeout(getConnectionTimeout());
             socketWrapper.setWriteTimeout(getConnectionTimeout());
             socketWrapper.setKeepAliveLeft(NioEndPoint.this.getMaxKeepAliveRequests());
-            // 向poller的selector注册client socket fd的OP_READ事件
+            // 向poller的队列投递任务，任务的类型为OP_REGISTER
+            // 任务内容：selector注册client socket fd的OP_READ事件
             poller.register(channel, socketWrapper);
             return true;
         }
@@ -461,17 +467,185 @@ public void run() {
 }
 ```
 
-最后看一下，processKey是如何将客户端的可读事件传递到Processor：
+最后看一下，processKey方法如何将客户端的可读事件传递到SocketProcessor：
 
 ```java
+protected void processKey(SelectonKey sk, NioSocketWrapper socketWrapper) {
+    try {
+        // 省略其他代码
 
+        processSocket(socketWrapper, SocketEvent.OPEN_READ, true)
+    } catch (CancelledKeyException ckx) {
+        // ...
+    }
+}
+
+public boolean processSocket(SocketWrapperBase<S> socketWrapper, SocketEvent event, boolean dispatch) {
+    try {
+        if (socketWrapper == null) {
+            return false;
+        }
+        SocketProcessorBase<S> sc = null;
+        if (processorCache != null) {
+            // 取出SocketProcessor的缓存
+            sc = processorCache.pop();
+        }
+        if (sc == null) {
+            // 没有则新建，在后续SocketWrapper关闭时一同返还缓存池中
+            sc = createSocketProcess(socketWrapper, event);
+        } else {
+            sc.reset(socketWrapper. event);
+        }
+        Executor executor = getExecutor();
+        if (dispatch && executor != null) {
+            // 异步分发，委托给Worker线程池执行
+            executor.executor(sc);
+        } else {
+            // 直接在poller线程中执行SocketProcessor的任务
+            sc.run();
+        }
+    } catch (...) {
+        // ...
+        return false;
+    }
+    return true;
+}
+```
+
+最后是通过抽象方法`createSocketProcessor(SocketWrapperBase<S>, SocketEvent)`来创建SocketProcess：
+
+```java
+// NioEndpoint的实现
+@Override
+protected SocketProcessorBase<NioChannel> createSocketProcessor(SocketWrapperBase<NioChannel> socketWrapper, SocketEvent event) {
+    return new SocketProcessor(socketWrapper, event);
+}
 ```
 
 # **2. Processor**
 
-## **2.1 SocketProcessor**
+SocketProcessor的执行方式有两种，一种是直接在poller线程中**同步执行**，一种是当worker线程池不为空时提交到池中进行**异步执行**
 
-## **2.2 Worker线程池**
+nio-http11/bio模式下，都不应该在poller线程中同步执行，因为poller线程只有一个，这会造成其他用户的请求阻塞
+
+## **2.1 Worker线程池**
+
+同样在startInternal()方法中初始化池，调用`createExecutor()`方法
+
+```java
+public void createExecutor() {
+    internalExecutor = true;
+    // 线程池内部队列
+    TaskQueue taskqueue = new TaskQueue();
+    TaskThreadFactory tf = new TaskThreadFactory(getName() + "-exec-", daemon, getThreadPriority());
+    // tomcat继承jdk线程池的实现
+    executor = new ThreadPoolExecutor(getMinSpareThreads(), getMaxThreads(), 60, TimeUnit.SECONDS, taskqueue, tf);
+}
+```
+
+> [tomcat线程池](https://zhuanlan.zhihu.com/p/86955374)
+
+tomcat.TaskQueue继承自jdk.LinkedBlockingQueue\<Runnable\>，是一个无界队列，重写了offer(Runnable)/take()/poll()等方法来支持自定义线程池的新特性
+
+正常的线程池使用无界队列作为任务队列后，将会面临以下问题：
+
+- 任务可以无限制的投递，当消费者无法处理过来时，程序面临OOM的危险
+
+- corePoolSize ～ maximumPoolSize之间数目的临时线程数无法被利用到，默认无界队列的线程池**线程数最多只能到达corePoolSize个**
+
+```java
+public class TaskQueue extends LinkedBlockingQueue<Runnable> {
+    // 该方法被调用的前提：池中线程数已到达corePoolSize
+    @Override
+    public boolean offer(Runnable o) {
+        if (parent == null) {
+            return super.offer(o);
+        }
+
+        if (parent.getPoolSize() == parent.getMaximumPoolSize()) {
+            // 如果当前池的线程数到达了最大数，这个时候就没了可工作的线程了，将任务投递到阻塞队列中
+            return super.offer(o);
+        }
+
+        // 到达此处，池中线程数：[corePoolSize, maximumPoolSize)，有可能有非核心空闲线程
+
+        if (parent.getSubmiitedCount() <= parent.getPoolSize()) {
+            // 正在执行的任务线程数 <= 当前池的线程数，说明有空闲线程阻塞队列等待任务，丢入队列中会被立即执行
+            // 这些空闲线程其实就是非核心临时线程
+            return super.offer(o);
+        }
+
+        // 到达此处时，池中线程数：[corePoolSize, maximumPoolSize)，且没有空闲的非核心线程（非核心线程都在处理任务）
+
+        if (parent.getPoolSize() < parent.getMaximumPoolSize()) {
+            // 没有到达最大线程数，可以继续创建非核心线程来执行，真实的利用这部分core到max的区域
+            return false;
+        }
+
+        // 到达此处，是因为以上判断并不是互斥串行的，并不准确
+        return super.offer(o);
+    }
+}
+```
+
+```java
+public class ThreadPoolExecutor extends java.util.concurrent.ThreadPoolExecutor {
+    @Override
+    public void execute(Runnable command, long timeout, TimeUnit unit) {
+        // 记录正在执行的任务数，可以推算出接下来会执行任务的线程数
+        submittedCount.incrementAndGet();
+        try {
+            super.execute(command);
+        } catch (RejectedExecution rx) {
+            if (super.getQueue() instanceof TaskQueue) {
+                final TaskQueue queue = (TaskQueue) super.getQueue();
+                try {
+                    if (!queue.force(command, timeout, unit)) {
+                        submittedCount.decrementAndGet();
+                        throw new RejectedExecutionException(sm..getString("threadPoolExecutor.queueFull"));
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+结论：
+- tomcat只解决了无界队列下线程数突破corePoolSize的限制，当遇到线程消费不过来时，仍会出现OOM风险
+
+- 提供reject重试机制来挽救任务：
+
+    主要出现在TaskQueue的offer返回false，调用ThreadPoolExecutor#addWorker前的场景，若恰好有其他调用offer的线程先行添加完毕，**且刚好工作线程数到达maximumPoolSize**，则会出现reject情况
+
+    offer返回false的情况：
+
+    - 还没有到达maximumPoolSize，且当前没有空闲的线程
+
+    - 如果队列设置了最大界限，由父类方法返回了false（默认设置Integer.MAX_VALUE）
+
+最终流程：
+
+1. 如果当前运行的线程，少于corePoolSize，则创建一个新的线程来执行任务
+
+2. 如果线程数大于corePoolSize了，Tomcat的线程不会直接把线程加入到无界的阻塞队列中，而是去判断poolSize是否等于 maximumPoolSize
+
+3. 如果等于，表示线程池已经满线程数运行，不能再创建线程了，直接把线程提交到队列，
+如果不等于，则需要判断，是否有空闲线程可以消费
+
+4. 如果有空闲线程（submittedCount < poolSize）则加入到阻塞队列中，空闲线程消费会立即返回阻塞进行消费
+
+5. **如果没有空闲线程，且当前还能创建线程，则尝试创建新的线程，在offer方法中返回false。**（这一步保证了使用无界队列，仍然可以利用线程的 maximumPoolSize）
+
+    如果创建新线程时失败，意味着出现了offer并发调用，前面的if条件并不准确，这种情况下也会出现拒绝重试
+
+6. 如果总线程数达到maximumPoolSize，则继续尝试把线程加入BlockingQueue中，这种情况也是并发调用offer下，if条件判断不准确导致
+
+7. 如果BlockingQueue达到上限（假如设置了上限），被默认线程池启动拒绝策略，tomcat线程池会catch住拒绝策略抛出的异常，再次把尝试任务加入中BlockingQueue中
+
+8. 再次加入失败，启动拒绝策略
+
+## **2.2 SocketProcessor**
 
 # **3. Adapter**
 
@@ -548,3 +722,5 @@ CoyoteAdapter.service(Request req, Response res)
 - [tomcat 线程模型](https://blog.csdn.net/qq_16681169/article/details/75003640)
 
 - [Acceptor默认是BIO](https://blog.csdn.net/u011385186/article/details/53148702)：tomcat的acceptor并没有使用selector，千万不能印象流
+
+- [有点萌的Tomcat线程池](https://zhuanlan.zhihu.com/p/86955374)
