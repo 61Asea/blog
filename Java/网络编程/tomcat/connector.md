@@ -472,10 +472,47 @@ public void run() {
 ```java
 protected void processKey(SelectonKey sk, NioSocketWrapper socketWrapper) {
     try {
-        // 省略其他代码
+        if (close) {
+            cancelledKey(sk, socketWrapper);
+        } else if (sk.isValid() && socketWrapper != null) {
+            if (socketWrapper.getSendfileData() != null) {
+                processSendfile(sk, socketWrapper, false);
+            } else {
+                // 取消当前socket在selector的读事件注册，防止多个线程同时读一个socket，保证同一时刻只有一个SocketProcessor处理socket的数据
+                unreg(sk, socketWrapper, sk.readyOps());
+                boolean closeSocket = false;
+                if (sk.isReadable()) {
+                    // 处理socket的读
+                    if (socketWrapper.readOperation != null) {
+                        if (!socketWrapper.readOperation.process()) {
+                            closeSocket = true;
+                        }
+                    } else if (!processSocket(socketWrapper, SocketEvent.OPEN_READ, true)) {
+                        // 数据入站操作交由SocketProcessor在worker线程池中异步执行
+                        closeSocket = true;
+                    }
+                }
 
-        processSocket(socketWrapper, SocketEvent.OPEN_READ, true)
-    } catch (CancelledKeyException ckx) {
+                if (!closeSocket && sk.isWritable()) {
+                    // 处理socket的写
+                    if (socketWrapper.writeOperation != null) {
+                        if (!socketWrapper.writeOperation.process()) {
+                            closeSocket = true;
+                        }
+                    } else if (!processSocket(socketWrapper, SocketEvent.OPEN_WRITE, true)) {
+                        // 数据出站操作依旧交由SocketProcessor异步执行
+                        closeSocket = true;
+                    }
+                }
+
+                if (closeSocket) {
+                    cancelledKey(sk, socketWrapper);
+                }
+            }
+        } else {
+            cancelledKey(sk, socketWrapper);
+        }
+    } catch (...) {
         // ...
     }
 }
@@ -511,6 +548,8 @@ public boolean processSocket(SocketWrapperBase<S> socketWrapper, SocketEvent eve
     return true;
 }
 ```
+
+`同步读`：poller线程不负责具体的读http message，当有可读事件时分配给SocketProcessor来处理，而后者是在tomcat的工作线程池来执行，即一个连接的http请求数据读取和poller是**异步**的，所以为了保证同一时刻只有一个SocketProcessor在处理socket的数据，会取消该socket在poller selector的可读事件
 
 最后是通过抽象方法`createSocketProcessor(SocketWrapperBase<S>, SocketEvent)`来创建SocketProcess：
 
@@ -664,6 +703,7 @@ protected class SocketProcessor extends SocketProcessorBase<NioChannel> {
         }
 
         try {
+            // handshake用于处理https的握手过程
             int handshake = -1;
             try {
                 if (socket.isHandshakeComplete()) {
@@ -671,9 +711,46 @@ protected class SocketProcessor extends SocketProcessorBase<NioChannel> {
                 } else if (event == SocketEvent.STOP || event == SocketEvent.DISCONNECT || event == SocketEvent.ERROR) {
                     handshake = -1;
                 } else {
+                    // 如果是http，则不需要该握手阶段，直接将标志置为0表示握手已经完成，详情见NioChannel的默认实现
+                    // 如果是https，则进行握手阶段，详情见SecureNioChannel的方法实现
                     handshake = socket.handshake(event == SocketEvent.OPEN_READ, event == SocketEvent.OPEN_WRITE);
                     event = SocketEvent.OPEN_READ;
                 }
+            } catch (...) {
+                // ...
+            }
+
+            if (handshake == 0) {
+                // TLS握手完成或无需握手
+                SocketState state = SocketState.OPEN;
+                if (event == null) {
+                    // 默认是读事件处理，调用AbstractProtocol#ConnectionHandler#process()方法
+                    state = getHandler().process(socketWrapper, SocketEvent.OP_READ);
+                } else {
+                    // 响应指定event处理
+                    state = getHandler().process(socketWrapper, event);
+                }
+                if (state == SocketState.CLOSED) {
+                    poller.cancelledKey(socket.getIOChannel().keyFor(poller.getSelector()), socketWrapper);
+                }
+            } else if (handshake == -1) {
+                // 握手失败，连接失败
+                getHandler().process(socketWrapper.SocketEvent.CONNECT_FAIL);
+                poller.cancelledKey(socket.getIOChannel().keyFor(poller.getSelector()), socketWrapper);
+            } else if (handshake == SelectionKey.OP_READ) {
+                // 向poller的selector注册OP_READ
+                socketWrapper.registerReadInterest();
+            } else if (handshake == Selection.OP_WRITE) {
+                // 向poller的selector注册OP_WRITE
+                socketWrapper.registerWriteInterest();
+            }
+        } catch (...) {
+            // ...
+        } finally {
+            socketWrapper = null;
+            event = null;
+            if (running && !paused && processorCache != null) {
+                processorCache.push(this);
             }
         }
     }
@@ -681,6 +758,137 @@ protected class SocketProcessor extends SocketProcessorBase<NioChannel> {
 ```
 
 # **3. Adapter**
+
+SocketProcessor在最后调用了`getHandler().process(socketWrapper, SocketEvent.OP_READ)`来处理请求，getHandler()返回的是Http11Protocol，其process将交互的逻辑又转移到了`CoyoteAdapater`处理：
+
+> 注意区分Protocol下processor和Endpoint下socketProcessor，两者名字相近，但是职责和顶层父类接口完全不同
+
+```java
+public abstract class AbstractProtocol {
+    // 抽象方法，用于返回AbstractProcessorLight类型的processor，用以处理请求
+    protected abstract Processor createProcessor();
+
+    protected static class ConnectionHandler<S> implements AbstractEndpoint.Handler<S> {
+        @Override
+        public SocketState process(SocketWrapperBase<S> wrapper, SocketEvent status) {
+            // 取出读就绪的socket
+            S socket = wrapper.getSocket();
+
+            Processor processor = (Processor) wrapper.getCurrentProcessor();
+            // 省略一部分代码
+
+            try {
+                if (processor == null) {
+                    // ...
+                }
+                if (processor == null) {
+                    // 先尝试从processor的回收区取
+                    processor = recycledProcessors.pop();
+                }
+                if (processor == null) {
+                    processor = getProtocol().createProcessor();
+                }
+
+                // ...
+                do {
+                    // Http11Processor#process方法，即父类AbstractProcessorLight方法
+                    state = processor.process(wrapper, status);
+                    // ...
+                } while (state == SocketState.UPGRADING);
+
+            } catch (...) {
+                // ...
+            }
+        }
+    }
+}
+
+public abstract class AbstractHttp11Protocol extends AbstractProtocol {
+    @Override
+    protected Processor createProcessor() {
+        // 该对象在创建的同时，会初始化Request对象和Response对象
+        Http11Processor processor = new Http11Processor(this, adapter);
+        return processor;
+    }
+}
+```
+
+`AbstractProcessLight#process(SocketWrapperBase<?>, SocketEvent)`将会处理OPEN_READ类型事件，调用service(SocketWrapperBase<?>)方法，从此处开始逐渐与Servlet标准接口接近：
+
+```java
+public abstract class AbstractProcessLight implements Processor {
+    public AbstractProcessor(Adapter adapter) {
+        // 初始化时，构造新的request对象和response对象，这两个对象都属于tomcat包下的
+        this(adapter, new Request(), new Response());
+    }
+
+    // 与CoyoteAdapter交互的抽象方法
+    protected abstract SocketState service(SocketWrapperBase<?> socketWrapper) throws IOException;
+
+    @Override
+    public SocketState process(SocketWrapperBase<?> socketWrapper, SocketEvent status) {
+        // ...
+        do {
+            // ...
+            else if (status == SocketEvent.OPEN_READ) {
+                // 调用Http11Processor的实现
+                state = service(socketWrapper);
+            }
+            // ...
+        }
+    }
+}
+
+public class Http11Processor extends AbstractProcessLight {
+    // 入站缓存
+    private final Http11InputBuffer inputBuffer;
+    // 出站缓存
+    private final Http11OutputBuffer outputBuffer;
+    private final HttpParser httpParser;
+
+    public Http11Processor(AbstractHttp11Protocol<?> protocol, Adapter adapter) {
+        super(adapter);
+        this.protocol = protocol;
+
+        httpParser = new HttpParser(protocol.getRelaxedPathChars(), protocol.getRelaxedQueryChars());
+
+        inputBuffer = new Http11InputBuffer(request, protocol.getMaxHttpHeaderSize(), protocol.getRejectIllegalHeader(), httpParser);
+        request.setInputBuffer(inputBuffer);
+
+        outputBuffer = new Http11OutputBuffer(response, protocol.getMaxHttpHeaderSize());
+        response.setOutputBuffer(outputBuffer);
+    }
+
+    @Override
+    public SocketState service(SocketWrapperBase<?> socketWrapper) throws IOException {
+        // 省略一些代码
+
+        if (getErrorState().isIoAllowed()) {
+            rp.setStage(org.apache.coyote.Constants.STAGE_PREPARE);
+            try {
+                // 读取数据，为request设置属性
+                prepareRequest();
+            } catch (...) {
+                // ...
+            }
+        }
+
+        // 省略一些代码
+
+        if (getErrorState().isIoAllowed()) {
+            try {
+                rp.setStage(org.apache.coyote.Constants.STAGE_SERVICE);
+                // 关键代码，CoyoteAdapter通过装饰器模式将在后续把tomcat接收到的request、response转化为servlet标准下的HttpRequest、HttpResponse对象
+                getAdapter().service(request, response);
+
+                // ...
+            } catch (...) {
+                // ...
+            }
+        }
+    }
+}
+```
 
 连接器需要对接的是标准的Servlet容器，Servlet的service方法遵循Servlet规范下，只能接收标准化的`ServletRequest`和`ServletResponse`:
 
@@ -701,6 +909,36 @@ public interface ServletRequest {
     public void setCharacterEncoding(String env) throws UnsupportedEncodingException;
 
     // ...
+}
+```
+
+最后看一下CoyoteAdapter是如何进行转化为以上的Servlet标准的：
+
+```java
+public class CoyoteAdapter implements Adapter {
+    @Override
+    public void service(org.apache.coyote.Requset req, org.apache.coyote.Response res) {
+        // Servlet规范下的HttpServletRequest子类
+        Request request = (Request) req.getNote(ADAPTER_NOTES);
+        // Servlet规范下的HttpServletResponse子类
+        Response response = (Response) res.getNot(ADAPTER_NOTES);
+
+        if (request == null) {
+            // ...
+        }
+
+        // ...
+
+        try {
+            // 通过对request对象的inputBuffer进行解析，并设置到Request对象中
+            postParseSuccess = postParseRequest(req, request, res, response);
+            if (postParseSuccess) {
+                request.setAsyncSupported(connector.getService().getContainer().getPipeline().isAsyncSupported());
+            }
+            // 正式地调用到container中的业务servlet，该操作在当前线程中阻塞完成，container进行路由
+            connector.getService().getContainer().getPipeline().getFirst().invoke(request, response);
+        }
+    }
 }
 ```
 
@@ -736,10 +974,32 @@ CoyoteAdapter.service(Request req, Response res)
 
 ->
 
-与container做交互（待补充）
+StandardService -> StandardEngine 
+->
 
-在调用栈的第二层出现了`AbstractProtocol`，体现了它使用组合的方式将EndPoint和Processor作为一个整体，提供它们封装和**交互**细节
+StandardPipeline.getFirst() -> StandardEngineValue.invoke(request, response)
 
+->
+
+StandardContextValue.invoke(request, response)：校验url的合法性
+
+->
+
+StandardHostValue.invoke(request, response)
+
+->
+
+StandardWrapperValue（servlet的包装类）.invoke(request, response)
+
+ApplicationFilterFactory.createFilterChain(request, wrapper, servlet)
+
+-> 
+
+filterChain.doFilter(request.getRequest(), response.getResponse);
+
+->
+
+servlet.service(request, response) --> HttpServlet.service(ServletRequest, ServletResponse res)
 
 # 参考
 - [断网故障时Mtop触发tomcat高并发场景下的BUG排查和修复（已被apache采纳）](https://developer.aliyun.com/article/2889)
