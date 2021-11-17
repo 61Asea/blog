@@ -564,6 +564,147 @@ public abstract class ContainerBase extends LifecycleBeanBase implements Contain
     }
     ```
 
+# **servlet**
+
+## **单例/多例**
+
+> [最佳实践: 勿在 Servlet 中实现 SingleThreadModel](https://www.cnblogs.com/soundcode/p/6296519.html)
+
+单例：不实现SingleThreadModel接口，每个请求共用同一个servlet实例
+
+多例：Servlet实现SingleThreadModel接口的话，容器会为每一个请求都创建一个新的Servlet实例，这样每个servlet都有自己独立的变量
+
+> 虽然可以使用SingleThreadModel，即多例模式来解决多线程并发操作servlet导致线程安全的问题，但这种方式会导致大量的servlet对象被创建销毁，产生极大开销
+
+## **生命周期**
+
+![servlet生命周期](https://asea-cch.life/upload/2021/11/servlet%E7%94%9F%E5%91%BD%E5%91%A8%E6%9C%9F-d248dc5c017b49829bff5c272bcca0a7.jpg)
+
+`生命周期`：初始化、service()调用、销毁，共三个阶段
+
+正常逻辑：在请求对应servlet时进行初始化，然后常驻在内存中，在最终服务器关闭时被销毁
+
+## **初始化**
+
+`层级关系（初始化时机）`：tomcat对于servlet的层级关系通过\<load-on-startup>来进行指定，这个层级属性决定servlet是否应该在**容器启动时初始化**以及**初始化的顺序**：
+
+```java
+public class StandardWrapper extends ContainerBase {
+    // 对应xml配置文件中的<load-on-startup>属性，这是一个层级属性
+    protected int loadOnStartUp = -1;
+
+    public int getLoadOnStartUp() {
+        return loadOnStartUp;
+    }
+}
+```
+
+具体的Wrapper加载(class load)、初始化(newInstance)、构造(init)逻辑在StandardContext中，所以servlet的初始化过程具备有**两个时机**：
+
+- StandardContext#startInternal()：容器启动
+
+    ```java
+    public class StandardContext extends ContainerBase {
+        // 前一个调用栈是StandardContext#startInternal()
+        public boolean loadOnStartUp(Container children[]) {
+            TreeMap<Integer, ArrayList<Wrapper>> map = new TreeMap<>();
+            for (int i = 0; i < children.length; i++) {
+                Wrapper wrapper = (Wrapper) children[i];
+                int loadOnStartup = wrapper.getLoadOnStartup();
+                // load-on-startup配置的值如果为负数，则不会立即被加载
+                if (loadOnStartup < 0)
+                    continue;
+                Integer key = Integer.valueOf(loadOnStartup);
+                ArrayList<Wrapper> list = map.get(key);
+                if (list == null) {
+                    list = new ArrayList<>();
+                    map.put(key, list);
+                }
+                list.add(wrapper);
+            }
+
+            // 按照TreeMap顺序进行load，则servlet会根据int值从小到大遍历
+            for (ArrayList<Wrapper> list : map.values()) {
+                for (Wrapper wrapper : list) {
+                    try {
+                        // 对load-on-startup大于0的servlet进行启动加载
+                        wrapper.load();
+                    } catch (ServletException e) {
+                    // ...
+                    }
+                }
+            }
+            return true;
+        }
+    }
+    ```
+
+    ```java
+    public class StandardWrapper extends ContainerBase {
+        @Override
+        public synchronized void load() throws ServletException {
+            // 调用loadServlet()获取到servlet的实例
+            instance = loadServlet();
+
+            if (!instanceInitialized) {
+                // 调用实例的init()方法
+                initServlet(instance);
+            }
+
+            // ...
+        }
+    }
+    ```
+
+- StandardWrapperValue#invoke(Request, Response)：客户端请求
+
+    没有配置load-on-startup属性的servlet，默认值都为-1，所以在容器启动时都不会被实例化
+
+    ```java
+    public class StandardWrapper extends ContainerBase {
+        @Override
+        // 具体见上代码调用wrapper.allocate()
+        public Servlet allocate() throws ServletException {
+            if (unloading) {
+                throw new ServletException(sm.getString("standardWrapper.unloading", getName()));
+            }
+            boolean newInstance = false;
+            if (!singleThreadModel) {
+            if (instance == null || !instanceInitialized) {
+                synchronized (this) {
+                    if (instance == null) {
+                        try {
+                            // 获得servlet的实例对象
+                            instance = loadServlet();
+                            newInstance = true;
+                        } catch (...) {
+                            // ...
+                        }
+                    }
+                    if (!instanceInitialized) {
+                        // 调用实例的init()方法
+                        initServlet(instance);
+                    }
+                }
+            }
+
+            // ...
+        }
+    }
+    ```
+
+无论是哪个时机初始化了servlet，最终都会进入相似的逻辑：获取servlet instance（StandardWrapper.loadServlet()），再调用实例的init()方法（initServlet(instance)）
+
+> 如果servlet是容器启动时已初始化完毕，当在请求到达StandardWrapperValue时，会直接从Wrapper中返回instance
+
+## **service()调用**
+
+详情见上请求解析过程
+
+## **销毁**
+
+一般是容器关闭的时候，由容器顶层的关闭事件往下传递，最终调用到servlet的destroy()方法
+
 # **总结**
 
 合理运用门面模式，将字节流数据读取完毕后，传入到tomcat的Request对象中，再通过Adapter类（门面）将该对象与Servlet的Request对象进行转换解析，Servlet用户将无需关注底层网络实现原理
