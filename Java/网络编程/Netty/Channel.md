@@ -490,3 +490,5 @@ public void channelRead(ChannelHandlerContext ctx, Object msg) {
 # 重点参考
 - [Netty中的那些坑](https://www.cnblogs.com/rainy-shurun/p/5213086.html)：讲解netty线程模型下，使用不当导致的各种坑
 - [Netty 防止内存泄漏措施](https://www.infoq.cn/article/olLlvGFx*Kr0UV9K7tez)：堆积任务导致问题的分析，包括解决方案
+
+- [Netty的高低水位流控](https://www.cnblogs.com/silyvin/p/12145700.html)
