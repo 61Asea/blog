@@ -63,7 +63,7 @@ public final class RecordAccumulator {
 
 ![IO发送](https://asea-cch.life/upload/2021/12/IO%E5%8F%91%E9%80%81-c4a74ec3052342d78d48359b4f26c115.png)
 
-Sender从RecordAccumulator中获取缓存消息，并进一步将原本ConcurrentHashMap\<TopicPartition, Deque\<ProducerBatch\>\>的保存形式转变为\<Node, List\<ProducerBatch\>>\，Node表示Kafka集群中的broker节点：
+Sender从RecordAccumulator中获取缓存消息，并进一步将原本ConcurrentHashMap\<TopicPartition, Deque\<ProducerBatch\>\>的保存形式转变为\<Node, List\<ProducerBatch\>\>，Node表示Kafka集群中的broker节点：
 
 ```java
 private long sendProducerData(long now) {
@@ -357,10 +357,10 @@ I/O模型：生产者缓存 + Sender epoll模式
 
 消息问题：
 - 丢失：
-    - 缓存区满：采用阻塞策略，防止缓存清除
+    - 缓存区满：采用阻塞策略，防止缓存清除（默认清除策略，会将丢失消息）
     - 网络问题：Sender提供消息ack + 重试机制
-- 重复：由重试导致，通过幂等机制解决
-- 有序：由网络延迟导致，通过幂等机制解决
+- 重复：由重试导致，通过幂等机制（PID + Sequence Number）解决
+- 有序：由网络延迟导致，通过幂等机制（PID + Sequence Number）解决
 
 # 参考
 
