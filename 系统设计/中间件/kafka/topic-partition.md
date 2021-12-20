@@ -139,7 +139,57 @@ leader副本选举、分区重分配、复制限流（与生产限速/配额做�
 
 ## **2.2 分区重分配**
 
+场景：
+- broker节点宕机，其分区副本都处于失效状态，Kafka不会将这些失效副本自动地迁移到集群中剩余可用broker节点上
 
+- 新增broker节点，默认不会有任何topic和partition，需要将现有的partition/replica平衡到新broker上
+
+    只有新创建的主题分区才能被分配到该节点上，这会导致与原先节点的负载严重不均衡
+
+做法：通过controller为每个分区添加新副本（增加副本因子），新的副本将从分区的leader副本复制所有的数据，在复制完成之后，控制器将旧副本从副本清单里移除（恢复为原先的副本因子）
+
+分区重分配对集群性能有很大影响，需要占用额外资源，实际操作中应降低分配粒度，分成多个小批次执行
+
+### **复制限流**
+
+数据复制占用额外资源，如果重分配的量过大势必会影响整体性能，**减小重分配粒度以小批次操作是一种可行思路**
+
+然而小批次方式可能仍不足以应对流量过大的情况，kafka提供限流机制，可以对副本复制流量加以限制，保证重分配期间整体服务不会有太大影响
+
+## **2.3 修改副本因子**
+
+每个分区的副本不一定要相同
+
+程序分配副本方案（与分区分配方式类似）：
+
+```scala
+object ComputeReplicaDistribution {
+    val partition = 3
+    val partition = 2
+
+    def main(args: Array[String]) : Unit = {
+        val brokerMetadatas = List(
+            new BrokerMetadata(0, Option("rack1")), 
+            new BrokerMetadata(1, Option("rack1")), 
+            new BrokerMetadata(2, Option("rack1"))
+        )
+
+        val replicaAssignment = AdminUtils.assignReplicasToBrokers(brokerMetadatas, partitions, replicaFactor)
+
+        println(replicaAssignment)
+    }
+}
+```
+
+## **2.4 合适分区数**
+
+建议将分区数设定为集群中broker的倍数
+
+分区并不是越多吞吐量就越大，需要考虑消费者的应用逻辑速率、文件句柄数等各种因素
+
+分区数变多的缺点：
+- Kafka正常启动和关闭耗时变长
+- 增加日志清理的耗时，被删除时也会耗费更多的时间
 
 # 参考
 - [Kafka 保证分区有序](https://blog.csdn.net/q322625/article/details/112911083)
@@ -150,3 +200,8 @@ leader副本选举、分区重分配、复制限流（与生产限速/配额做�
 - [生产者幂等性](https://www.jianshu.com/p/b1599f46229b)
 
 - [主题、分区、副本](https://www.cnblogs.com/rexcheny/articles/11627073.html)：图文并茂，不过在讲第一张图的副本leader有误，并且提出了kafka分区副本单调读的特性
+
+# 重点参考
+- [Kafka的Partition重分配](https://cloud.tencent.com/developer/article/1349448)：新增broker节点的重分配操作文档
+
+- [kafka宕机的容灾处理](https://www.sohu.com/a/421785188_463994)：leader副本选举：按AR顺序查找，如果找到的副本在ISR中，则当选为leader，并且还需保证前任leader是退位状态，防止脑裂
