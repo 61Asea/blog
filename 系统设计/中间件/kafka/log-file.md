@@ -272,6 +272,13 @@ linux脏页写入：`vm.dirty_background_ratio`，指脏页数量占系统内存
 
 ## **5.3 zero copy**
 
+> 零拷贝是针对内核模式而言，数据在内核模式下实现了零拷贝
+
+SG-DMA + sendfile()：
+
+sendfile：合并read/write，将2次系统调用降为1次
+
+SG-DMA：可以将kernel page cache数据直接复制到网卡，省去kernel page cache -> app buffer，app buffer -> kernel socket buffer这两次内存拷贝
 
 # **总结**
 
@@ -286,3 +293,10 @@ Log Segment：日志文件、偏移量索引文件、时间戳索引文件等组
 Kafka高性能的三大因素：消息顺序追加、页缓存、零拷贝
 
 # 参考
+
+- [深入理解Kafka]()
+
+- [Kafka is Database](https://zhuanlan.zhihu.com/p/392645152)
+
+- [Linux Kernel的buffers和cached的区别](https://www.dwhd.org/20150731_120817.html)
+
