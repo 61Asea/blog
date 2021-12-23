@@ -258,7 +258,11 @@ ZAB分为：发现阶段、同步阶段、广播阶段
 
 > Paxos算法用于构建一个分布式的一致性状态机系统
 
+# **4. zk的一致性**
 
+- [一致性模型到底是弱一致性还是强一致](https://blog.csdn.net/jason_jiahongfei/article/details/108877776)
+
+- [深入浅析zookeeper的一致性模型及其实现](https://zhuanlan.zhihu.com/p/65366906)
 
 # 参考
 - [从Paxios到Zookeeper]()
