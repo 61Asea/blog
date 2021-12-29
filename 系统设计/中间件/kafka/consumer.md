@@ -218,6 +218,48 @@
 
 > 一般情况下，应尽量避免不必要的再均衡发生
 
+流程：
+
+1. 第一阶段：确定消费者组所属的coordinator（FIND_COORDINATOR）
+
+    consumer加入消费者组，并与coordinator建立连接
+
+    coordinator选取规则：
+
+    - 计算分区数：partition_num = group_id % groupMetadataTopicPartitionCount
+
+    - 获取_consumers_offsets主题的partition_num分区leader副本所在broker
+
+2. 第二阶段：发送请求给协调者以加入消费者组（JOIN_GROUP），消费者组在处理完毕后返回结果给各个消费者
+
+    - JOIN_GROUP_REQUEST：请求完毕后阻塞等待kafka的返回
+
+        consumer发送JoinGroupRequest请求，请求携带group_protocols域，囊括消费者所配置的多种策略，由`partition.assignment.strategy`配置
+
+        coordinator会通过一个Map维护每个发送JoinGroup请求的consumer
+
+        主要有两个目的：
+
+        - 选举消费者**组leader**：启动先到先得，后续随机
+
+            如果消费组内还未有leader，则第一个加入消费者组的消费者为组leader
+            
+            如果某一时刻，leader消费者由于某种原因退出组，则使用Map的第一个键值对
+
+        - 投票选取**消费者组的分配策略**：选取各个消费者支持的最多策略
+
+            收集各个消费者支持的所有分配策略，组成去重候选集candidates，并从每个消费者的group_protocols中选出第一个支持的策略，最后选取最多投票的策略
+
+    - JOIN_GROUP_RESPONSE：
+
+        处理完leader选举和最终分区策略后，发送响应给各个consumer，响应包括：leader_id、members_id（leader consumer有值，其他consumer为空）、protocol_metadata
+
+3. 第三阶段（SYNC_GROUP）：组leader通过第二阶段选取的策略实施具体的分区分配，并通过coordinator将方案转发给各个消费者
+
+    每个consumer都会发送SYNC_GROUP_REQUEST到coordinator中，leader consumer的请求携带分配结果，其他consumer请求相当于拉取元数据
+
+4. 第四阶段（HEART_BEAT）：所有consumer进入正常工作状态，并向GroupCoordinator发送心跳来维持它们与消费组的从属关系，以及它们对分区的所有权关系
+
 ### **重均衡监听器ConsumerRebalanceListener**
 
 subscribe(...)订阅接口中，提供了重均衡监听器的形参，该监听器用于设定发生再均衡**动作前/后的一些准备或收尾动作**
