@@ -1,4 +1,4 @@
-# Kafka：interview
+# Interview：Kafka
 
 # **1. 为什么用mq**
 
@@ -188,9 +188,9 @@ leader副本的写入，需要等待消息经过其他follower副本的确认，
 
 3. 
 
-- 实现零拷贝发送数据：sendfile() + SG-DMA
+- 零拷贝发送数据：sendfile() + SG-DMA
 
-- 网卡接收数据进行持久化：mmap + write
+- **网卡接收数据进行持久化：mmap + write**
 
 
 
@@ -205,3 +205,5 @@ leader副本的写入，需要等待消息经过其他follower副本的确认，
 - [Kafka的特性，以及为什么有这些特性](https://www.jianshu.com/p/449f009bce1d)
 
 - [kafka page cache解读](https://www.sohu.com/a/379932771_198222)
+
+- [mmap() + write / sendfile + ScatterGather-DMA](https://mp.weixin.qq.com/s?__biz=MzkzNTEwOTAxMA==&mid=2247491660&idx=1&sn=a7d79ec4cc3f40e7b9a9018436a7377a&chksm=c2b1a8b1f5c621a7268ca298598a15c4ac575790628651e5651925b5efd96ebc0046796ef5b1&token=931654098&lang=zh_CN#rd)
