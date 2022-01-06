@@ -164,14 +164,169 @@ tomcat的要求：容器与应用隔离独立、应用之间隔离独立、在�
 
 ![tomcat破坏双亲委派机制](https://pic2.zhimg.com/80/v2-46ac76a5a050f0b1842b75b0407044f5_720w.jpg)
 
-# **4. 三大回收算法**
+# **4. 回收算法有哪些？**
+
+标记-清除算法：通过GC ROOT标记所有活的对象，再线性遍历堆内存，记录死亡对象的内存到空闲列表中
+
+- 优点：效率中等，实现简单
+
+- 缺点：产生内存碎片，导致后续分配效率低下
+
+- 应用：CMS、G1
+
+- mark阶段与存活对象数量成正比，sweep阶段耗时与**整堆大小**成正比
+
+复制算法：将内存分为相等大小的两个区域，每次只使用其中的一块。回收时将所有存活对象拷贝到另一块空的内存区域中，并将当前内存区域清空
+
+- 优点：效率最快
+
+- 缺点：一半的内存空间浪费
+
+- 应用：G1、大多数分代收集器的年轻代
+
+- 耗时与**存活对象大小**成正比
+
+标记-整理算法：通过GC ROOT标记所有活的对象，再将存活的对象全部移动到连续内存块的一边
+
+- 优点：不会产生内存碎片
+
+- 缺点：效率最低
+
+- 应用：HotSpot大多数老年代的回收算法
+
+- mark阶段与**存活对象的数量**成正比，compact阶段耗时与**存活对象的大小**成正比
+
+`compact、copying、sweep、mark的效率排行`：
+
+    compact >= copying > mark > sweep
+
+    mark + sweep > copying
+
+- mark效率：与存活的对象数量成正比，因为不涉及到内存拷贝，对象再大对于该阶段而言没有影响
+
+- sweep效率：与堆大小成正比，不涉及到内存拷贝，但是对象越大，需要记录到空闲内存编号到空闲列表耗时越大
+
+- copying：与存活对象的大小成正比，涉及内存拷贝，所以对象越大拷贝开销越大，由于将mark、compact、修正指针等多个步骤一起执行，相对compact而言会较快
+
+- compact：与copying类似，但取决于具体算法，compact可能先计算一次目标地址，然后修正地址，再移动对象，分布执行的开销越大
+
+## **统一答复**
+
+回收算法主要分为三类：标记清除、复制、标记整理：
+
+- 第一种算法是通过GC ROOT标记所有存活对象，并线性遍历堆内存的非存活对象进行清除，清除是通过空闲列表记录而不是真正的清空
+
+- 第二种算法，则是将内存区域分为两块相同大小，使用时只使用一块，当触发回收时将使用中的内存区域存活对象拷贝到另一块空的内存区域中，并清空当前的内存区域。**但算法存在内存利用率低的问题，所以将young gen分为了Eden和两个Survivor区，并配置以8:1:1的比例，更大程度的减小该算法对内存的浪费**
+
+- 第三种算法，也是通过GC ROOT标记所有存活对象，后将所有存活对象移动到内存区域的一边，并清除掉边界以外的其他内存区域
+
+# **5. GC ROOT是什么？有哪些GC ROOT**
+
+GC ROOT是追踪式GC的起点，这些引用都是当前活跃存活的对象引用，从起点往下开始搜索走过的路径称为引用链，当一个对象到GC ROOT没有任何引用链相连，则判定该对象是可被回收的
+
+- 所有线程的虚拟机栈中的局部变量表（主要）
+
+- 本地方法栈中引用的对象
+
+- 类的静态属性、常量池属性
+
+`跨代引用`：在young gen之上，维护一个记忆集（卡表）来对老年代的内存区域进行标记，存在跨代引用的区域会被写为脏页，写脏页的动作通过写屏障实现
+
+YGC：针对young gen的垃圾回收算法
+
+- GC ROOTS：基础GC ROOTS + 跨代引用（但是GC ROOTS只扫描指向young gen的那部分引用，一个子集）
+
+    由于只收集young gen，所以gc root出发遍历到的节点是old gen时，则不会继续遍历直接忽视，因为大部分情况下扫描到old gen节点后，其下一个节点大概率也为old gen节点
+     
+    然而，还是存在old引用young的情况，所以为了程序的正确性，将old gen的对象都视为活的，并将**存在跨代引用**的部分加入到gc root中，这部分是需要遍历到尾部的
+
+- 扫描区域：young gen
+
+FGC：针对全堆的垃圾回收算法
+
+- GC ROOTS：基础GC ROOTS（会扫描全部引用）
+
+- 扫描区域：old gen
+
+对于三种回收算法的运用：
+
+- 标记-清除：GC ROOT遍历完毕（具体引用链的广度由分代决定），**然后再线性遍历一遍堆内存，因为只能感知到存活对象**
+
+- 复制：GC ROOT遍历完毕，只需要处理存活的对象，这些对象就是GC ROOT广度遍历后的结果
+
+- 标记-清除：GC ROOT遍历完毕，只需要处理存活的对象
+
+## **统一回复**
+
+GC ROOTS是tracing gc的起点，根据起点往下遍历获得的引用链上的引用，都被认为是存活对象，反之为死亡对象
+
+GC ROOT的范围：
+
+- 所有线程虚拟机栈栈帧上的局部变量表
+- 本地方法栈栈帧引用的对象
+- 类静态属性、常量池属性
+
+# **5附加题1：分代的优势**
+
+传统GC：整个过程需要stop the world，分代可以减少需要检查的对象数量，缩短STW的耗时
+
+并发GC：不存在STW，分代是为了更快的触发回收，并更快的获得空闲内存区域，以满足与此同时一直上升的分配需要
+
+# **5附加题2：三色标记法**
+
+# **6. 垃圾回收器**
+
+![回收器分类](https://asea-cch.life/upload/2022/01/%E5%9B%9E%E6%94%B6%E5%99%A8%E5%88%86%E7%B1%BB-261d097475134718b36fdcbcfa3f2dc2.webp)
+
+新生代的垃圾收集器包括：Serial、ParNew、Parallel
+
+- 后两者相当于Serial的多线程版本，提高了young gc的并发程度以降低STW时间
+
+- 它们都采用copying算法
+
+老年代的垃圾收集器包括：Serial Old、Parallel Old、CMS
+
+- Parallel Old是Serial Old的并行版本，提高并发程度以降低STW时间，它们俩都采用标记-整理算法，收集范围是**全堆**
+
+    > 这是由于HotSpot前身的虚拟机系列一脉相承，然而对于老年代而言对象不容易死亡，频繁的移动对象所造成的内存拷贝开销需要引起重视
+
+- CMS：以获得最短停顿时间为目标的收集器，相对其他收集器的STW时间更短暂，可以并行收集是他的特点，使用`sweep`的方式进行回收，新生代固定搭配ParNew回收器，收集范围是**老年代对象**
+
+分区域（后续分代）：G1，将堆均分为多个相同大小的区域，并根据区域回收价值评估，从而进行回收的算法
+
+# **7. CMS聊一下**
+
+思路：讲CMS的并行收集步骤、CMS的其他收集搭配、CMS回收算法导致问题以及措施
+
+CMS特点是并行收集，期望对应用进程的暂停影响降至最小，以打造一款低延时的垃圾收集器，其并行收集过程可分为4步：
+
+1. `initial marking（初始标记阶段）`
+
+2. concurrent marking（并发标记阶段）
+
+3. `final marking / remarking（最终标记/重标记阶段）`
+
+4. cleanup（并发清除阶段）
+
+其中第一步和第三步为STW的
+
+本身是老年代回收器（Old gc），还会搭配ParNew收集器对新生代进行收集（Young Gc），当出现`concurrent mode fail`意味着并发收集的同时已经不满足新的分配需求，会STW执行Serial Old（Full Gc）
+
 
 # 参考
 - [JVM-10问](https://mp.weixin.qq.com/s?__biz=MzkzNTEwOTAxMA==&mid=2247485143&idx=1&sn=fd442fde5fbea90ae2314b1f7f88b1d8&chksm=c2b24e2af5c5c73c91c54d4932598e8d375803c361e2e5b52c32daa9ca200e9ac348ba4f04cb&token=982147105&lang=zh_CN&scene=21#wechat_redirect)
 - [方法区/元空间](https://www.jianshu.com/p/3811a57a597e)
 - [R大-JDK6的inflation机制](https://www.iteye.com/blog/rednaxelafx-548536)
-- [R大-G1](https://hllvm-group.iteye.com/group/topic/44381)
+- [类加载的代码解析](https://blog.csdn.net/yangcheng33/article/details/52631940)
+- [ParNew和CMS的工作原理](https://www.jianshu.com/p/a66fa15cc64a)
 
 # 重点参考
 - [请问Java反射的性能为什么比直接调用慢一个数量级左右？](https://www.zhihu.com/question/30097357)
 - [类加载器的双亲委派机制全过程](https://blog.csdn.net/m0_45406092/article/details/108976907)
+
+- [R大-HotSpot VM的开发历史和实现细节](https://hllvm-group.iteye.com/group/topic/37095#post-242695)
+- [R大-G1](https://hllvm-group.iteye.com/group/topic/44381)
+- [R大-并发垃圾收集器（CMS）为什么没有采用标记-整理算法来实现？](https://hllvm-group.iteye.com/group/topic/38223#post-248757)
+- [R大-Major GC和Full GC的区别是什么？触发条件呢？](https://www.zhihu.com/question/41922036/answer/93079526)
+- [R大-copying具体实现](https://hllvm-group.iteye.com/group/topic/39376#post-257329)
+- [R大-CMS、FullGC以及压缩碎片](https://hllvm-group.iteye.com/group/topic/28854)
