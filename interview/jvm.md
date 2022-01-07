@@ -2,8 +2,13 @@
 
 - JVM内存区域
 - 类初始化过程（加载、连接、初始化）
+    - 反射为什么慢
 - 双亲委派机制（破坏双亲委派机制）
+    - 破坏双亲委派
 - 三大回收算法
+- GC ROOT
+    - 分代的优势
+    - 并发三色标记
 - CMS工作原理
 - G1工作原理
 - Full GC排查
@@ -298,19 +303,160 @@ GC ROOT的范围：
 
 思路：讲CMS的并行收集步骤、CMS的其他收集搭配、CMS回收算法导致问题以及措施
 
-CMS特点是并行收集，期望对应用进程的暂停影响降至最小，以打造一款低延时的垃圾收集器，其并行收集过程可分为4步：
+CMS特点是并行收集，期望对应用进程的暂停影响降至最小，以打造一款低延时的垃圾收集器，其并行收集过程可分为4步，其中第一步和第三步为STW的：
 
 1. `initial marking（初始标记阶段）`
 
-2. concurrent marking（并发标记阶段）
+2. concurrent marking（并发标记阶段）：三色标记，使用写屏障实现增量更新机制，记录引用关系的插入
 
-3. `final marking / remarking（最终标记/重标记阶段）`
+3. `final marking / remarking（最终标记/重标记阶段）`：出现长时间停顿的可能所在阶段
+
+    使用增量更新机制，所以该阶段需要重新扫描根集合以保证安全（`某些赋值字节码指令无法使用写屏障`），由于收集的是old gen，还需加入整个young gen
 
 4. cleanup（并发清除阶段）
 
-其中第一步和第三步为STW的
+本身是老年代回收器（Old gc），还会搭配ParNew收集器对新生代进行收集（Young Gc），当出现`concurrent mode fail`意味着并发收集产生过多浮动垃圾，已经不满足新的分配需求，会STW执行Serial Old（Full Gc）
 
-本身是老年代回收器（Old gc），还会搭配ParNew收集器对新生代进行收集（Young Gc），当出现`concurrent mode fail`意味着并发收集的同时已经不满足新的分配需求，会STW执行Serial Old（Full Gc）
+问题：
+
+- 由于remark阶段会加入整个young gen，如果并发标记阶段中应用进程分配大量对象，将大大增加remark阶段的耗时
+
+    措施：控制应用的分配速率处于一个温和的状态
+
+- 内存碎片问题
+
+    措施：
+    - cms压缩参数也会在整个进程执行N次Full Gc后，在下一次Full Gc中采用mark-compact方式回收
+
+    - 一般采用业务低峰时间手动触发full gc并搭配cms的压缩参数，对碎片进行整理
+
+# **8. G1聊一下**
+
+思路：G1回收步骤，G1的统计回收模型（CSet、RSet），G1回收算法导致问题以及措施
+
+G1是一款软实时的垃圾收集器，与CMS的并发清除不同，G1的并发工作线程主要是进行global current marking（全局统计）对每个region的存活对象进行统计，并不实质性的进行清理
+
+对于G1而言，gc主要分为**young gc**和**mixed gc**：背后的并发线程定时执行global current marking，而**真实清理由正常的分代式VM GC策略触发**，并视情况切换young gc和mixed gc：
+
+    假想G1的STW混合时间线
+
+    启动程序
+    
+    -> young gc（新生代内存不足以分配）
+
+    -> young gc（新生代内存不足以分配）
+
+    -> young gc + initial marking（global current marking开始，搭载在young gc的STW阶段上）
+
+    (...concurrent marking...)
+
+    -> young gc（新生代内存不足以分配），同时伴随并发的concurrent marking
+
+    -> final marking（并发标记完成，STW进行最终标记处理并发过程中产生的引用关系删除情况）
+
+    -> clean up（对各个region进行统计，STW，类似mark-sweep线性遍历）
+
+    -> mixed gc（新生代内存不足以分配触发，并结合上面得出的region详情，结合用户参数和统计模型选定某些高回报region进行回收）
+
+    -> mixed gc
+
+    -> young gc + initial marking
+
+    -> ...
+
+所以，G1在大方向上应该视为两个同时进行的过程：
+
+- 统计过程（global concurrent marking）
+
+    G1的`统计`过程与CMS的`回收`过程极其相似，G1有四个步骤：
+
+    1. `initial marking`（初始标记阶段，STW）：与CMS没有什么差别，找出基础GC ROOT能直接到达的对象，压入扫描栈中
+
+    2. concurrent marking（并发标记阶段）：三色标记，使用`写屏障 + STAB`的方式保证mutator并发操作下，对**引用删除**关系进行记录
+
+        SATB：snapshot-at-the-beginning，快照记录在引用变化前的旧值，这种方式下的三色标记可能会产生更多的浮动垃圾，但是在**remark阶段下无需扫描整个根集合**
+
+    3. `remark/final marking`（最终标记阶段，STW）：将SATB写屏障记录的引用进行处理
+
+    4. `clean up`（清理阶段，STW）：清点和重置标记状态，类似与mark-sweep的线性遍历过程，但该过程并没有实质性的清理对象，而是通过维护一个外部的bitmap来记录各个region存活对象，为**G1的收益预测模型**，即mixed gc提供充足的数据支撑
+
+- copying算法回收垃圾过程（evacuation）
+
+    > region gc的特征：自由选择任意多个region来独立收集，构成收集集合（C-Set），CSet又由各个区域的记忆集（R-Set）组成
+
+    最终就是将C-Set中每个region的存活对象拷贝到新的region区域中，并清空当前的region
+
+    - young gc：选定所有处于young gen的region，可以通过控制**young gen的region个数**来控制ygc开销
+
+    - mixed gc：选定所有处于young gen的region，外加根据global concurrent marking统计得出收集收益高的若干old gen region（在`用户指定开销参数`范围内尽可能选择）进行回收
+
+# **9. 什么时候触发YGC和FGC？对象什么时候进入老年代？**
+
+YGC触发条件：
+
+- **新对象申请内存空间时，Eden区无法满足内存分配需求，触发YGC**
+
+- Parallel Scavenge框架下，默认要触发Full Gc前，先执行一次YGC，期望减少full gc的工作量（奇葩）
+
+FGC触发条件：
+
+- **老年代可分配的剩余连续空间不够**
+
+    - YGC前，都会触发空间分配担保，若担保失败则触发Full Gc
+    
+        `内存分配担保`：计算old gen剩余连续空间是否满足**历代/平均晋升到老年代的对象总大小**，不满足则为担保失败，需要进行Full Gc
+
+    - 由内存分配策略中的大对象直接进入老年代策略导致
+
+    > 年龄晋升、动态对象年龄判断不会导致full gc，因为这在第一点空间分配担保机制中已经包括在内了
+
+    相关的收集器：除了CMS外的收集器，G1也包括在内
+
+- CMS的concurrent mode failed：出现该异常表示浮动垃圾过多，CMS处理不过来
+
+- System.gc()：建议VM进行一次Full gc，具体是否实施视情况而定
+
+对象进入老年代：
+
+- 大对象直接进入（只能用于Serial和ParNew两款新生代收集器）
+
+- 长期存活对象进入老年代：Survivor区的对象每经历一次YGC，年龄就加1，当达到阈值则晋升老年代
+
+- `动态对象年龄判定`：Survivor空间相同年龄的对象大小总和大于Survivor空间的一半，年龄大于或等于该年龄的对象就直接进入老年代
+
+# **10. 频繁Full Gc怎么排查**
+
+可能性：
+
+- 是否出现内存泄漏
+
+- Eden是否太小，导致对象频繁进入老年代
+
+1. 查看FGC花费时间，GC后的old gen和young gen是否减少，得到初步的情况进行判断
+
+2. 执行`jmap -dump:format=b,file=dumpfilepid`dump出内存文件进行具体分析，通过Eclipse Memory Analyzer进行分析与定位代码
+
+**附加题：CPU飙高，同时FGC怎么办**
+
+1. 找到当前进程的pid：`top -p pid -H`查看资源占用，找出异常线程
+
+2. 将异常pid转成16进制后，使用`jstack pid | grep -A 10 0x32d`查看线程堆栈
+
+3. dump出内存文件用Eclipse Memory Analyzer结合分析
+
+## 统一回复
+
+通过jstack导出堆栈日志和jmap导出堆转储文件结合分析，排查问题是否为：
+- 出现内存泄漏
+- young、old区域分配不均
+- 配置不够
+
+# **11. GC参数调优**
+
+调优的目的是为了用更小的硬件获取更高的吞吐量
+
+## 统一回复
+
 
 
 # 参考
@@ -319,6 +465,8 @@ CMS特点是并行收集，期望对应用进程的暂停影响降至最小，�
 - [R大-JDK6的inflation机制](https://www.iteye.com/blog/rednaxelafx-548536)
 - [类加载的代码解析](https://blog.csdn.net/yangcheng33/article/details/52631940)
 - [ParNew和CMS的工作原理](https://www.jianshu.com/p/a66fa15cc64a)
+
+- [G1调优实践日记--G1HeapWastePercent和InitiatingHeapOccupancyPercent的应用](https://blog.csdn.net/lovejj1994/article/details/109620239)
 
 # 重点参考
 - [请问Java反射的性能为什么比直接调用慢一个数量级左右？](https://www.zhihu.com/question/30097357)
@@ -330,3 +478,8 @@ CMS特点是并行收集，期望对应用进程的暂停影响降至最小，�
 - [R大-Major GC和Full GC的区别是什么？触发条件呢？](https://www.zhihu.com/question/41922036/answer/93079526)
 - [R大-copying具体实现](https://hllvm-group.iteye.com/group/topic/39376#post-257329)
 - [R大-CMS、FullGC以及压缩碎片](https://hllvm-group.iteye.com/group/topic/28854)
+
+# 难点
+- [R大和LeafInWind-CMS的增量更新与具体代码例子](https://hllvm-group.iteye.com/group/topic/44529)
+- [三色标记和漏标多标总结](https://www.jianshu.com/p/12544c0ad5c1)
+- [R大-G1](https://hllvm-group.iteye.com/group/topic/44381)
