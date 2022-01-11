@@ -1,5 +1,14 @@
 # Java基础
 
+- 基础并发：
+    - synchronized
+    - volatile
+    - JMM
+- 线程
+- JUC初级：
+    - ThreadLocal
+    - FutureTask
+
 # **1. synchronized**
 
 synchronized是java提供的原子性**内置锁**，也称为监视器锁，当进入synchronized原语时，会进入指定监视器的获取锁流程，具备4个特点：
@@ -79,7 +88,63 @@ JDK6后为synchronized引入了`偏向锁`和`轻量级锁`，这两个锁主要
 
 # **2. volatile**
 
+volatile可以保证共享变量在线程之间的**可见性**与**有序性**，相比synchronized可以提供更轻量级的可见性保证，但对于多个变量的操作无法保证原子性
 
+解决问题：线程工作内存与主存的一致性问题
+
+原理：volatile通过读写屏障使得多级缓存对某变量的写会立即刷回主存，对某变量的读会强制缓存失效并重新从主存中读取，读写屏障硬件语义下为`#lock`指令，触发cpu`mesi一致性协议`
+
+# **3. JMM**
+
+为了解决CPU和内存之间的读写速度差异，硬件发展过程中引入了高速缓存（L1、L2、L3三级缓存）弥补之间的差距，但又引入**缓存一致性/可见性问题**，加之编译器与CPU的重排序又引入了**有序性**问题，不同的硬件和操作系统内存也**存在访问差异**，因此需要JMM内存模型对多线程操作下的规范约束，屏蔽底层的差异保证**Java进程在不同的平台下仍能达到一致的内存访问效果**
+
+- 原子性：JVM保证了lock、unlock、read、load、assign、use、store、write八个基本操作的原子性
+
+- 可见性：通过volatile、final、synchronized的语义保证可见性
+
+- 有序性：通过volatile、synchronized的屏障来禁止cpu对某些指令的重排
+
+happen-before原则：
+
+1. 程序顺序规则：单线程每个操作，happen-before于该线程的后续操作
+
+2. volatile变量规则：对volatile变量的写，happen-before于对该变量的读
+
+3. 传递性规则：若A先于B，B先于C，则Ahapen-beforeC发生
+
+4. 监视器锁规则：对一个监视器锁的unlock，happen-before对该锁的lock
+
+5. final变量规则：对final变量的写，happen-before于对final域对象的读，happen-before后续对final变量的读
+
+## **统一答复**
+
+JMM是一套屏蔽不同硬件和操作内存访问差异的规范机制，在JMM模型下Java进程在不同平台运行都可以获得一致的内存访问语义，它主要对工作内存和主存的一致性、操作原子性和有序性提出规范：
+
+- 原子性：提供8大原子操作语义，其中lock和unlock对应synchronized的monitorenter和monitorexit
+
+- 可见性：通过volatile、synchronized的语义保证共享变量可见性
+
+- 有序性：通过volatile、synchronized的读写屏障禁止编译器、cpu对某些指令的重排
+
+工作内存：L1、L2、L3和寄存器
+
+主存：物理内存
+
+# **4. ThreadLocal**
+
+ThreadLocal本身不存储数据，而是在每个线程中创建一个ThreadLocalMap，线程访问变量时，其实访问的是自身Map中的变量值，以此实现**线程与线程之间相互隔离**，达到**线程封闭**效果
+
+ThreadLocalMap哈希冲突：使用开放地址法解决哈希冲突，具体采用线性探测
+
+内存泄漏：ThreadLocalMap除非在线程结束，否则始终无法被回收
+
+措施：
+
+- key为弱引用，每次GC时都会回收，从而使得entry数组存在一堆key为null，value有值的entry对象，在用户下次使用时，可以将值直接覆盖在这些key为null的Entry
+
+- **使用完之后调用remove方法删除Entry对象**
+
+# **5. 线程状态**
 
 # 参考
 - [Java基础篇](https://mp.weixin.qq.com/s?__biz=MzkzNTEwOTAxMA==&mid=2247485644&idx=1&sn=db46ab83196031d8f563585b72a7b511&chksm=c2b24031f5c5c927bd125e219d4c2c810254f49ddc28988591978d27fe10a07eac85247bf89e&token=982147105&lang=zh_CN&scene=21#wechat_redirect)
