@@ -130,7 +130,77 @@ JMM是一套屏蔽不同硬件和操作内存访问差异的规范机制，在JM
 
 主存：物理内存
 
-# **4. ThreadLocal**
+# **4. 线程**
+
+- 进程：程序的一次执行，是操作系统进行资源分配和调度的独立单位
+
+- 线程：进程中的实际执行单位，是一个更小的独立实体，本身不占用系统资源，只占用一些线程私有的资源（虚拟机栈、寄存器、程序计数器）
+
+线程共有6个状态：NEW、RUNNABLE、BLOCKED、WAIT、TIMED_WAITING、TERMINATED
+
+- NEW：初始化状态，线程对象被创建后的初始状态
+
+- RUNNABLE：可运行状态，可细分为READY就绪状态和RUNNING运行状态
+
+    - READY：等待OS分配时间片
+
+    - RUNNING：获得时间片正在运行的线程，调用Thread.yield()后，在当前时间片使用完毕后会重新回到READY状态
+
+    - 进入：
+        - BLOCKED -> READY：竞争到监视器的锁对象
+        - TIME_WAITING -> READY：当前线程的sleep(timeout)方法结束
+        - READY -> RUNNING：获得时间片
+        - RUNNING -> READY：调用Thread.yield()，且线程的时间片用完
+
+    - 退出：
+        - RUNNING -> BLOCKED：发现当前监视器已有owner，且为重量级锁，则进入阻塞状态
+        - RUNNING -> TIMED_WAITING：
+            - 调用sleep(timeout)
+            - 调用obj.wait(timeout)
+            - 调用threadObj.join(timeout)
+        - RUNNING -> WAITING：
+            - 调用obj.wait()
+            - 调用threadObj.join()
+
+- BLOCKED：阻塞状态，处于Waiting Queue（collection list和entry list）和On Deck的线程，等待竞争监视器锁
+
+    - 进入：
+        - RUNNING -> BLOCKED：如上
+        - WAITING -> BLOCKED：处于阻塞队列中，被其他线程的notify()/notifyAll()方法唤醒
+    - 退出：
+        - BLOCKED -> READY：竞争监视器锁成功，进入就绪状态
+
+- WAITING：无限期等待状态，处于Blocking Queue（wait set）中的线程，本质是调用了监视器.wait()方法
+
+    - 进入：
+        - RUNNING -> WAITING：
+             - 调用obj.wait()
+             - 调用某线程对象的join()方法，本质上仍旧是调用obj.wait()
+    - 退出：
+        - WAITING -> BLOCKED：
+            - 当前监视器持有线程，调用obj.notify()/obj.notifyAll()
+            - join()等待的线程完成任务后，会自动唤醒等待线程
+
+- TIMED_WAITING：计时等待状态，处于Blocking Queue（wait set）中的线程，唯一不同的是它们会在一段时间后自动转化为其他状态
+
+    - 进入：
+
+        - RUNNABLE -> TIMED_WAITING
+            - 调用obj.wait(timeout)
+            - 调用Thread.sleep(timeout)
+            - 调用某线程对象的join(timeout)，本质上仍旧是调用obj.wait(timeout)
+
+    - 退出：
+
+        - TIMED_WAITING -> BLOCKED：
+            - 调用obj.notify()/obj.notifyAll()
+            - 通过obj.wait()进入TIMED_WAITING状态的，且已到结束时间，自动转换为BLOCKED
+            - join()线程执行完毕，调用obj.notify()/obj.notifyAll()
+
+        - TIMED_WAITING -> READY：
+            - 调用Thread.sleep(timeout)进入状态的，且已到达结束时间，则自动转换到Ready中等待调度
+
+# **5. ThreadLocal**
 
 ThreadLocal本身不存储数据，而是在每个线程中创建一个ThreadLocalMap，线程访问变量时，其实访问的是自身Map中的变量值，以此实现**线程与线程之间相互隔离**，达到**线程封闭**效果
 
