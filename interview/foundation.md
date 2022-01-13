@@ -1,4 +1,4 @@
-# Interview：Java基础
+# Interview Two：Java基础
 
 - 基础并发：
     - synchronized
@@ -216,7 +216,23 @@ ThreadLocalMap哈希冲突：使用开放地址法解决哈希冲突，具体采
 
 - **使用完之后调用remove方法删除Entry对象**
 
-# **5. 线程状态**
+# **5. FutureTask**
+
+支持**获取结果**、**同步执行**的异步任务类，实现了Runnable和Future接口，主要实现思路类似AQS：结合volatile、CAS（伴随着状态自旋和阻塞），使用`并发无锁栈`
+
+- 并发无锁栈waiters：FutureTask保留栈顶元素的引用，每有一个调用该任务`get()`方法等待执行完毕的线程都从栈顶入栈，而出栈则是从栈顶元素开始（先进后出）
+
+- FutureTask#get() -> FutureTask#awaitDone()：调用后判断任务的状态
+
+    - 如果为COMPLETED（已完成），则直接返回结果FutureTask.outcome
+
+    - 如果为COMPLETING（正在完成中），则调用Thread.yield()后短暂停止，再去获取结果
+
+    - 如果为CANCELLED（已取消），则直接抛出任务取消异常
+
+    - 否则，进入并发无锁栈中阻塞，等待唤醒
+
+- FutureTask#finishCompletion：唤醒并发无锁栈的所有线程
 
 # 参考
 - [Java基础篇](https://mp.weixin.qq.com/s?__biz=MzkzNTEwOTAxMA==&mid=2247485644&idx=1&sn=db46ab83196031d8f563585b72a7b511&chksm=c2b24031f5c5c927bd125e219d4c2c810254f49ddc28988591978d27fe10a07eac85247bf89e&token=982147105&lang=zh_CN&scene=21#wechat_redirect)
