@@ -48,7 +48,7 @@ execute()流程如下：
 
     - 效果：同步队列**本身没有含量**，即无法不保存任务，会不停创建新的线程进行执行，直到达到maximumPoolSize后执行拒绝策略
 
-    - 使用场景：Executors.newCachedThreadPool，
+    - 使用场景：Executors.newCachedThreadPool
 
 2. 无界队列：不带参数构造器的LinkedBlockingQueue
 
@@ -80,9 +80,19 @@ execute()流程如下：
 
     - 场景：ScheduledThreadPoolExecutor
 
-5. 
+5. tomcat队列：TaskQueue（extends LinkedBlockingQueue）
 
+    - 效果：将超过corePoolSize数的线程视作**空闲线程**，修改线程数满corePoolSize则直接投递到队列的规则，改为当前若有空闲线程，则投递任务，否则新起线程
+
+        该规则下的tomcat线程池会更**提前创建线程资源**来应对突发流量，而不是等待队列满后才开始创建线程。`根据空闲线程数量来决定是投递队列还是新起线程，对于流量变化有更强的适应性`
+        
+        普通池在队列满后才开始新增线程数，对于流量增长不够敏感
+        
+        若使用无界LinkedBlockingQueue，则还能消除无法使用超过corePoolSize线程的限制（大部分情况为有界）
+        
 ## **worker**
+
+
 
 ## **拒绝策略**
 
