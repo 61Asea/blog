@@ -46,7 +46,7 @@ execute()流程如下：
 
 1. 同步队列：SynchronusQueue
 
-    - 效果：同步队列**本身没有含量**，即无法不保存任务，会不停创建新的线程进行执行，直到达到maximumPoolSize后执行拒绝策略
+    - 效果：同步队列**本身没有含量**不保存任务，当消费线程不够时会创建新的线程进行执行，直到达到maximumPoolSize后执行拒绝策略
 
     - 使用场景：Executors.newCachedThreadPool
 
@@ -96,6 +96,14 @@ execute()流程如下：
 
 ## **拒绝策略**
 
+- AbortPolicy：拒绝策略，抛出拒绝异常
+
+- DiscardPolicy：丢弃策略，空操作
+
+- DiscardOldestPolicy：替换最久的任务策略，将队头任务替换成新任务
+
+- CallerRunsPolicy：调用者执行策略，直接让调用者线程执行
+
 # **Executors**
 
 - SingleThreadExecutor
@@ -107,3 +115,5 @@ execute()流程如下：
 # **ScheduledThreadPoolExecutor**
 
 # 参考
+
+- [线程池拒绝策略分别使用在什么场景](http://www.javashuo.com/article/p-xzcmklmk-nd.html)
