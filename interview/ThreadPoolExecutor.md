@@ -90,9 +90,19 @@ execute()流程如下：
         
         若使用无界LinkedBlockingQueue，则还能消除无法使用超过corePoolSize线程的限制（大部分情况为有界）
         
-## **worker**
+## **Worker**
 
+继承自AQS，实现类似ReentrantLock的同步资源管理，通过资源的占用来**表示当前工作线程的工作状态**：
 
+- 0：idle状态，说明正在等待任务，此时可以中断线程
+
+- 1：工作状态，`正在执行任务时则不应该被中断`
+
+中断线程：调用`interruptIdleWorker（）`（shutdown()或tryTerminate()都会触发）中断空闲的线程，空闲的依据是**tryLock()方法是否成功**
+
+不可重入：主要应对当前正在执行任务的线程，若其任务内容是中断该线程所在线程池，由于正在执行任务的线程不应被中断，可以**防止其不收该中断逻辑的影响**
+
+> 任务内容是调用该线程所在线程池的interruptIdleWorker()方法，那么假设线程是可重入的，tryLock()将会对一个可重入锁返回true（计数器加1），并中断自身线程的任务，这不符合语义：正在执行任务时不应该被中断
 
 ## **拒绝策略**
 
@@ -108,11 +118,37 @@ execute()流程如下：
 
 - SingleThreadExecutor
 
-- FixedThreadPool
+- FixedThreadPool：固定线程数线程池
 
-- CachedThreadPool
+    - 队列：无界LinkedBlockingQueue
+
+    - 线程数：固定线程数corePoolSize，maximumPoolSize设置不生效
+
+    - 思想：用于在已知并发压力情况下，对线程数做限制
+
+    - 缺点：队列长度没有边界，如果有大量的任务请求到达，会出现队列过长导致程序OOM
+
+- CachedThreadPool：缓存线程池
+
+    - 队列：SynchronousQueue（公平模式TransferQueue、非公平模式TransferStack）
+
+    - 线程数：没有固定线程（corePoolSize为0），最大线程数能到maximumPoolSize
+
+    - 思想：当没有新线程时会创建新线程，由空闲线程时直接复用，线程数会根据系统实时业务情况动态调整，适合**耗时较短的任务**
+
+    - 缺点：线程数目没有边界，如果任务耗时较长且并发量过大，会启动大量线程从而导致OOM
+
+    > 队列没有长度不会OOM
 
 # **ScheduledThreadPoolExecutor**
+
+- 队列：DelayedWorkQueue（最大堆优先级队列，使用**ReentrantLock保证线程安全**）
+
+- 线程数：固定线程数corePoolSize，maximumPoolSize设置不生效
+
+- 思想：定时调度，一般由程序自发行为添加定时任务，自产自销情况下一般不会出现消费不完的问题
+
+- 缺点：队列默认值为Integer.MAX_VALUE，当使用不当时仍会出现OOM情况，如重复提交调度任务
 
 # 参考
 
