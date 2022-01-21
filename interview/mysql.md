@@ -411,6 +411,8 @@ EXPLAIN SELECT e FROM `demo` WHERE b = 1 AND f = 0;
 
 - [B+树节点有多大](https://blog.csdn.net/dl674756321/article/details/102987984)：B+树高度低，能减少I/O次数，跳表、B树高度较高，Hash不支持联合索引的最左匹配，范围查询
 
+- [关于MySQL buffer pool的预读机制](https://www.cnblogs.com/geaozhang/p/7397699.html)
+
 # 重点参考
 - [mysql 物理顺序_实验：innodb 的存储顺序是否完全物理无关？](https://blog.csdn.net/weixin_35531726/article/details/113441137)：innodb在ibd文件中存储的数据，无论是页之间还是页内记录都是**物理顺序无关**的，页内记录的物理无关只限制在页内，不能跨越到其他页中
 
