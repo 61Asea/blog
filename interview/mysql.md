@@ -318,9 +318,51 @@ EXPLAIN SELECT e FROM `demo` WHERE b = 1 AND f = 0;
 
 # **6. 表量级，分库分表**
 
+1. 表量级：为什么数据越多，压力越大？
 
+    - `内存无法覆盖所有索引`：db会将索引数据预先读取到innodb buffer中，如果数据量级过大且buffer size过小，将会产生更多的磁盘随机I/O读
+
+        解决方案：增加机器的内存配置、分表
+
+    - B+树的高度变高：这意味着到达叶子节点需要更多次I/O读
+
+        - 非叶子节点指针数：`默认页大小 / （指针大小 + key大小）`，指针大小在mysql中为6字节，key和页大小则根据实际情况
+
+        - 叶子节点数据个数：`默认页大小 / 行数据大小`
+
+        - 一个非叶子节点的所有叶子节点可存储数据个数：非叶子节点指针数 * 叶子节点数据个数
+
+        - 树高度对应的数据量级： 非叶子节点指针数 ^ (树高度 - 1) * 叶子节点数据个数
+
+            - 高度为2，key为bigint，每行1k：18720条数据，**一次I/O**
+
+            - 高度为3，key为bigint，每行1k：21902400条数据，**两次I/O**
+
+2. 分库分表思路
+
+    - 切分方向：方向分为垂直和水平，前者由**业务层面**驱动，对表库结构会产生影响；后者由**数据平铺**驱动，不对表库结构产生影响
+
+    - sharding key：分表字段，用于映射路由sql条件到具体的表上，可以根据C端业务来选取，如：面向用户端的用户Id、玩家Id
+
+    - 分片算法：主要是形成映射，最简单的方式有哈希取模、一致性哈希算法（削弱取模数改动后导致的不均影响）、均匀轮询（Kafka也有）、**映射表**等方式
+
+    - 主要问题：
+
+        - 分布式主键：雪花算法、**基础起始步长**
+
+        - 笛卡尔积问题：以shardingsphere为例，需要指定联表的绑定关系，减少无必要的查询
+
+        - 非sharding key的查询：与sharding key有关联，但sql条件上无法直接利用sharding key作为查询条件
+
+            - `映射表`：将非sharding key通过映射转换为sharding key，具体做法是映射非sharding key与sharding key的关系，取出所有相关联的sharding key进行查询
+
+            - 后台处理：通过多线程全表扫，再聚合最终结果来做，以异步的形式实现
+
+**sharding key**：
 
 # **7. 日志，主从同步**
+
+![RC搭配ROW格式binlog导致问题](https://asea-cch.life/upload/2022/01/RC%E6%90%AD%E9%85%8DROW%E6%A0%BC%E5%BC%8Fbinlog%E5%AF%BC%E8%87%B4%E9%97%AE%E9%A2%98-b06485d318de492d832da3f98c986415.JPG)
 
 日志：
 
@@ -356,6 +398,12 @@ EXPLAIN SELECT e FROM `demo` WHERE b = 1 AND f = 0;
 
         缺点：对于发送事务的session，在主机宕机后会出现数据变多的风险，因为其事务操作是失败的，但是从节点可能是成功的，在主从切换后会出现本应失败的数据出现的情况
 
+# **8. 疑问：Mysql悲观锁和乐观锁对应的业务场景是怎么样的**
+
+- [Mysql悲观锁和乐观锁](https://www.cnblogs.com/cyhbyw/p/8869855.html)
+
+![mysql乐观锁悲观锁疑问](https://asea-cch.life/upload/2022/01/mysql%E4%B9%90%E8%A7%82%E9%94%81%E6%82%B2%E8%A7%82%E9%94%81%E7%96%91%E9%97%AE-6d3a56b3592c472d9dd56b9caaa39b13.JPG)
+
 # 参考
 - [数据库索引的知识点](https://segmentfault.com/a/1190000023314270)：索引类型（按结构划分）、聚簇索引、非聚簇索引、覆盖索引、索引种类（按作用范围）、最左匹配法则、`索引失效场景`、`索引不适用场景`
 
@@ -370,3 +418,7 @@ EXPLAIN SELECT e FROM `demo` WHERE b = 1 AND f = 0;
 - [索引下推的解释 + explain](https://www.jianshu.com/p/9927a2307329)
 
 - [索引失效的场景](https://www.zhihu.com/question/295402716)
+
+- [Mysql加锁过程详解（1）-基本知识](https://www.cnblogs.com/crazylqy/p/7611069.html)：不同隔离级别的加锁详情，包括db锁过程的详细解答
+
+- [Mysql悲观锁和乐观锁](https://www.cnblogs.com/cyhbyw/p/8869855.html)
