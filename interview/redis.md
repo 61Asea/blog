@@ -42,23 +42,37 @@
 
         2. 三维，节点拥有高度属性，**相同高度的节点**可以串起来更高维度的**链表**，高度在1~32之间随机
 
-    - intset
+    - intset：整数集合，是set集合键实现之一，底层使用数组存储整数，并保证数组中不会出现重复的元素
 
-    - ziplist：
+    - `ziplist`：压缩列表，是redis用于**节省内存空间，提高内存利用率**而设计的数据结构，list、dict、zset在元素个数不满阈值时，会采用它减少空间占用
 
-    - quicklist
+        连续的内存块组成，这也意味着它拥有数组的缺点，即在变更时需要重新分配数组空间，或挪动数据
 
-2. 五种类型键（API）
+    - quicklist：快速列表，redis3.2之后使用quicklist，协调ziplist与linkedlist各自缺点，具体采用多个ziplist组成双向链表
 
-    - string
+        - linkedlist：链表的next和prev指针占用空间大，无法提供随机访问性
 
-    - list
+        - ziplist：数组插入删除代价大
 
-    - dict
+        这种思路减少了指针个数，提高内存利用率，也相当于将ziplist分段，防止量级过大下ziplist删除插入产生极大代价
 
-    - set
+2. 五种类型键（API）：redis通过7大基础数据结构，进一步封装自身的对象系统，这五大对象数据结构都至少用了1种基础数据结构
 
-    - zset
+    - string：int、embstr、raw三种编码，整数值使用int，小于32字节字符串使用embstr，大于32字节或修改设置后使用raw，后两种编码都使用了sds
+
+    - list：统一使用quicklist
+
+    - dict：ziplist、hashtable，小于512个键值对，或单个键值对大小小于64字节时使用ziplist
+
+    - set：intset、hashtable，前者可以节省内存，当存在字符串类型元素或数量过大时使用hashtable的keyset
+
+    - zset：ziplist、skiplist + hashtable
+
+        - zset的ziplist：用两个entry来存储一个集合元素，第一个entry为分数，第二个entry为对象值。**每个元素在列表中从小到大进行排序，分数越小的元素越靠近表头**
+
+        - zset使用跳表的原因：跳表有序，且查找为O(logN)时间复杂度，支持范围操作如`ZRANK`、`ZRANGE`
+
+        - zset维护hashtable的原因：hashtable的key为成员对象，value为分数值，通过这种方式可以实现O(1)时间复杂度查找成员分数值的功能`ZSCORE`
 
 # **2. Redis快的原因**
 
