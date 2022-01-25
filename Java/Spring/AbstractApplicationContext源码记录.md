@@ -152,7 +152,7 @@ refreshBeanFactory方法由AbstractApplicationContext的子类实现：
         this.beanFactory.setSerializationId(getId());
     }
     ```
-    > 注意：注解配置Bean的上下午，在此刻并没有加载beanDefinition，而是调用方通过调用公共方法对bean进行注册
+    > 注意：AnnotationConfigApplicationContext在此刻没有加载beanDefinition，**要么在其构造函数中已经调用register()方法进行加载**，要么由调用方自行决定加载时机
 
 在`ClassPathXmlApplicationContext`中，任务包括：
 - IO流读取xml文件的配置，将其转化为Resource类型对象
@@ -217,9 +217,9 @@ protected void prepareBeanFactory(ConfigurableListableBeanFactory beanFactory) {
     beanFactory.setBeanExpressionResolver(new StandardBeanExpressionResolver(beanFactory.getBeanClassLoader()));
     beanFactory.addPropertyEditorRegistrar(new ResourceEditorRegistrar(this, getEnvirment()));
 
-    // 相当重要的一个方法：所有实现了Aware接口的bean，在被初始化时，会被这个beanProcessor进行回调
+    // 相当重要的一个BeanPostProcessor：所有实现了Aware接口的bean，在被初始化时，会被这个beanProcessor进行回调
     // 这个我们很常用，如我们会为了获取 ApplicationContext 而 implement ApplicationContextAware
-   // 注意：它不仅仅回调 ApplicationContextAware，还会负责回调 EnvironmentAware、ResourceLoaderAware 等
+    // 注意：它不仅仅回调 ApplicationContextAware，还会负责回调 EnvironmentAware、ResourceLoaderAware 等
     beanFactory.addBeanPostProcessor(new ApplicationContextAwareProcessor(this));
 
     // 如果bean依赖于以下几个接口实现类，在自动装配的时自动忽略它们，Spring会通过其它方式来处理这些依赖
@@ -326,7 +326,7 @@ BeanFactoryPostProcessor：由ApplicationContext管理，在bean**实例化**前
 
 BeanPostProcessor：由BeanFactory管理，在bean**初始化的前与后**调用执行
 
-# 6.** registerBeanPostProcessors(ConfigurableListableBeanFactory beanFactory)
+# **6.registerBeanPostProcessors(ConfigurableListableBeanFactory beanFactory)**
 
 ```java
 protected void registerBeanPostProcessors() {
