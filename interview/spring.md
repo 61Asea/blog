@@ -103,18 +103,68 @@ JDK动态代理：基于**反射机制**实现，target类**若实现某个`接�
 
 CGLIB动态代理：基于asm第三方框架，通过**修改字节码生成一个`子类`**，然后重写父类的方法，实现对代码的增强
 
+**问题1：AOP使用this导致注解失效**
+
+因为this获得的是被代理对象，而不是增强对象，所以没有增强行为
+
+解决方案：
+
+1. 实现BeanFactoryAware接口获得beanFactory，通过beanFactory来获取增强对象
+
+2. 如@Transactional注解上，配置expose-proxy = true，将代理对象暴露在AopUtils线程变量里，使用增强对象时通过线程变量获取
+
+3. @Configuration思路，实现cglib的拦截器，具体通过调用invokeSuper()来取代invoke()
+
 # **5. 事务传播机制**
 
 通过@EnableTransactionManagement(proxyTargetClass = true)开启事务，注解包括`@Import(TransactionManagementConfigurationSelector.class)`，由ConfigurationClassPostProcessor解析
 
 对象是否有事务增强由bean是否由@Transactional注解决定，最终会调用`AbstractPlatformTransactionManager`对事务进行管理
 
-事务传播机制：在多个方法的调用中，规定事务传递的方式
+事务传播机制（PROPAGATION）：在多个方法的调用中，规定事务传递的方式，共有7种事务传播机制
 
+- REQUIRED：默认，如果当前线程没有事务，则创建一个事务，否则加入该事务
+
+- REQUIRED_NEW：无论当前线程是否存在事务，都会创建新事务
+
+- NESTED：如果当前线程没有事务，则创建一个事务，否则创建一个当前事务的**子事务（嵌套事务）**
+
+- ...
 
 # **6. 共有几种装配方式**
 
+注入对象的方式：
+
+- bean扫描发现机制（@ComponentScan + @Component、@Bean、@Service、@Controller） + 自动装配（@Autowired、@Resource）
+
+- 在Java中进行显示配置（@Configuration）
+
+- 在XML中进行显示配置
+
+自动装配：主要根据bean的类型和名称进行注入
+
+- @Autowired：默认先按bean的`type`注入，存在多个bean时再按`name`注入，默认要求依赖对象必须**存在且唯一**
+
+    - 允许不存在，标注@Autowired(required = false)
+
+    - 若确实存在同个类型多种实现，需配合@Primary、@Qualifier，使用@Qualifier后将直接按`name`注入
+
+- @Resource：默认先按bean的`name`注入，如果没有匹配再按bean的`type`装配
+
+    - 不指定，按默认规则（效率差）
+
+    - 同时指定name和type，从上下文中找到唯一匹配的bean进行装配
+
+    - 只指定name：只按`name`注入，不会再通过`type`匹配
+
+    - 只指定type：只按`type`注入，不会再通过`name`匹配
 
 # 参考
+
+- [Cglib invoke以及invokeSuper的一点区别](https://www.cnblogs.com/lvbinbin2yujie/p/10284316.html)
+
+- [cglib动态代理中invokeSuper和invoke的区别](https://blog.csdn.net/weixin_43634610/article/details/103487513)
+
+- [Spring AOP、AspectJ、CGLIB 都是什么鬼？它们有什么关系？](https://zhuanlan.zhihu.com/p/426442535)：曾经以为AspectJ是Spring AOP一部分，是因为Spring AOP使用了AspectJ的Annotation。使用了Aspect来定义切面,使用Pointcut来定义切入点，使用Advice来定义增强处理。虽然使用了Aspect的Annotation，但是并没有使用它的编译器和织入器。其实现原理是JDK 动态代理，在运行时生成代理类
 
 # 重点参考
