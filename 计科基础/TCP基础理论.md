@@ -147,7 +147,7 @@ TCP是面向连接的协议，使用TCP之前必须先建立TCP连接，而**建
 
     首部关键信息：SYN = 1，seq = client_isn
 
-    客户端状态：SYS_SENT
+    客户端状态：SYN_SENT
 
     服务端状态：LISTENED
 
