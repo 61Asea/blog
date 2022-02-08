@@ -9,6 +9,18 @@
     - LinkedHashMap：LRU
     - ConcurrentHashMap
 
+- ArrayList和LinkedList
+
+    - 数据结构：Object[]数组连续空间，双向链表不连续空间
+
+    - 随机访问性：ArrayList具备，LinkedList不具备
+
+    - 插入/删除开销：ArrayList的add方法默认往数组尾部添加，这是因为在数组中间位置添加需要挪动后续元素的位置；链表直接修改引用就行
+
+    - 内存占用情况：链表需要保存前/后指针
+
+    - 都是线程不安全的
+
 # **1. HashMap**
 
 **底层结构**：数组 + 链表/红黑树存储键值对，通过映射关系链接起**键和数组索引的关系**，使用拉链表解决哈希冲突问题
@@ -26,7 +38,7 @@
 
     - 对于低位特征不明显（基本全是1或者0）的key，在基本数组长度都较小的情况下，分布将不够均匀，所以HashMap还会通过将hash值的**高16位和低16位**进行”异或“运算
 
-- `哈希冲突``：指数组长度有限，即使key的hash不同，通过公式计算仍可能处于同一个数组索引位导致冲突
+- `哈希冲突`：指数组长度有限，即使key的hash不同，通过公式计算仍可能处于同一个数组索引位导致冲突
 
     - 解决思路：采用拉链法解决该问题，具体采用长度小于8使用链表，**长度大于等于8且桶数组长度达到64时**转换链表为红黑树
 
@@ -57,8 +69,11 @@
     - 当前位置公式：oldCap & hash == 0
     
         (2oldCap - 1) & hash = (oldCap - 1) & hash
+
         => 2oldCap & hash - 1 & hash = oldCap & hash - 1 & hash
+
         => 2(oldCap & hash) = oldCap & hash
+
         => oldCap & hash = 0
 
 **扩容先后问题**：因为HashMap是集中式扩容，所以扩容和插入的先后顺序没有很大关系，实现上采用**先插入后扩容**；而redis是渐进式扩容，所以需要**先扩容再插入**
@@ -230,7 +245,7 @@ LinkedList使用场景：
 
 - [ConcurrentHashMap7](https://www.cnblogs.com/ITtangtang/p/3948786.html)：HashEntry的next指针域为final类型，每次删除某个元素e时，会将e之前的结点全都克隆一遍（e之后的结点可以复用），并将e之前结点链的队尾结点链接到e之后结点链的第一个结点上。这种做法的思路是：`不变性访问不需要同步从而节省时间`，但是会额外带来删除的复制开销
 
-- [ArrayList和LinkedList区别（蚂蚁金服面试题）](cnblogs.com/ysyy/p/10891079.html)
+- [ArrayList和LinkedList区别（蚂蚁金服面试题）](https://cnblogs.com/ysyy/p/10891079.html)
 
 # 重点参考
 - [ConcurrentHashMap8](https://blog.csdn.net/ZOKEKAI/article/details/90051567)

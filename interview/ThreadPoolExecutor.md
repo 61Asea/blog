@@ -1,10 +1,18 @@
 # Interview Four ：线程池
 
-- 核心参数和成员
+- 核心参数和成员：corePoolSize、maximumPoolSize、keepAliveTime、Policy、Queue
 
 - 执行流程、线程回收流程、拒绝策略
 
 - 使用5大参数定制的各种Executor
+
+    - cachedThreadPool：设置core为0，max为整型最大值，通过SynchronousQueue来复用空闲线程
+
+    - TaskQueue：tomcat的队列，通过改写队列的offer方法，重新定制ThreadPoolExecutor的投递行为
+
+    - 无界队列：在默认的队列offer方法规则下，线程池的线程数将不会超过core数量
+
+    - 小池大队列/大池小队列：前者期望更充分利用cpu，后者期望降低对cpu的使用
 
 - ScheduledThreadThreadPoolExecutor定时调度器
 
@@ -86,9 +94,9 @@ execute()流程如下：
 
         该规则下的tomcat线程池会更**提前创建线程资源**来应对突发流量，而不是等待队列满后才开始创建线程。`根据空闲线程数量来决定是投递队列还是新起线程，对于流量变化有更强的适应性`
         
-        普通池在队列满后才开始新增线程数，对于流量增长不够敏感
+        > 普通池在队列满后才开始新增线程数，对于流量增长不够敏感
         
-        若使用无界LinkedBlockingQueue，则还能消除无法使用超过corePoolSize线程的限制（大部分情况为有界）
+        即使tomcat使用无界LinkedBlockingQueue，也能根据新规则消除无法使用超过corePoolSize线程的限制（大部分情况为有界）
         
 ## **Worker**
 
