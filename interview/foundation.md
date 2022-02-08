@@ -1,13 +1,22 @@
 # Interview Two：Java基础
 
-- 基础并发：
-    - synchronized
-    - volatile
-    - JMM
-- 线程
+- 基础并发：原子性、可见性、有序性、可重入、非公平
+    - synchronized：
+        - 结构：waiting queue（collection list、entry list）、blocking queue、ondeck
+        - 优化：锁自适应自旋、锁消除、锁粗化、锁膨胀过程（偏向锁、轻量级锁）
+
+    - volatile：mesi、#lock、读写屏障
+
+    - JMM：屏蔽硬件差异、happen-before
+        - 原子性：`lock`、`unlock`、read、write、load、assign、use、store八大原子操作
+        - 可见性：synchronized或volatile提供
+        - 有序性：通过读写屏障，具体由synchornized、volatile、final等提供，遵循happen-before原则
+
+- 线程：状态（NEW、RUNNABLE、BLOCKED、WAITING、TIMED_WAITING、TERMINATED）
 - JUC初级：
-    - ThreadLocal
-    - FutureTask
+    - ThreadLocal：ThreadLocalMap、内存泄漏
+    - FutureTask：异步执行同步获取、并发无锁栈（get()方法线程进入，并由执行线程完毕执行finishCompletion()唤醒）
+    - CAS：ABA问题
 
 # **1. synchronized**
 
@@ -21,17 +30,19 @@ synchronized是java提供的原子性**内置锁**，也称为监视器锁，当
 
         - collectionList：用于存放每个竞争失败的线程，每个竞争失败的线程会加入到该集合，专门划分该区域是为了**解决大量线程在并发情况失败后对等待队列进行锁竞争**
 
-        - 后者则是用于存放竞争候选者，候选者们作为准备进入OnDeck的预备线程，由JVM每次从collectionList挪出一部分线程加入
+        - entryList：存放竞争候选者，候选者们作为准备进入OnDeck的预备线程，由JVM每次从collectionList挪出一部分线程加入
     
     - blocking queue：阻塞队列，主要是监视器对象的`等待集合waitSet`，当获得监视器的owner线程调用obj.wait()方法时，会进入到该集合等待被notify()唤醒，唤醒后的线程无需进入collectionList，直接进入entryList
 
-    - onDeck：`任意时刻，**最多只有一个线程正在竞争锁资源**，该线程称为OnDeck`
+    - onDeck：`任意时刻，最多只有一个线程正在竞争锁资源，该线程称为OnDeck`
 
-    > 处于waiting queue、ondeck的线程都处于Blocked状态，处于blocking queue的线程都处于wait状态
+    > 处于waiting queue、ondeck的线程都处于BLOCKED状态，处于blocking queue的线程都处于WAITING状态
     
 - 可见性/有序性：操作系统底层使用的互斥锁，最终汇编后也包括volatile使用的#Lock前缀指令，该指令通过读/写屏障确保变量的可见性和有序性
 
 - 可重入性：owner线程每次进入/退出同步块，monitor对象的计数器都会加/减1，重入性避免线程出现自己锁自己造成死锁的现象
+
+- 非公平锁：synchronized在收到新线程的锁请求时，**有可能抢占onDeck线程的锁资源**，不会立即加入到collection list中，而是先自旋获取锁，如果获取成功则直接成功，否则再加入collection list中
 
 > 被唤醒后的线程，会被加入到collection list中等待jvm搬运，而竞争锁资源的只有onDeck线程（等待被唤醒），即任何时刻都只有一个线程正在竞争锁资源，不会出现惊群效应
 
@@ -134,11 +145,11 @@ JMM是一套屏蔽不同硬件和操作内存访问差异的规范机制，在JM
 
 # **4. 线程**
 
-- 进程：程序的一次执行，是操作系统进行资源分配和调度的独立单位
+- 进程：程序的一次执行，是**操作系统**进行资源分配和调度的独立单位
 
-- 线程：进程中的实际执行单位，是一个更小的独立实体，本身不占用系统资源，只占用一些线程私有的资源（虚拟机栈、寄存器、程序计数器）
+- 线程：**进程**的实际执行单位，是一个更小的独立实体，**本身不占用系统资源**，只占用一些进程的资源（虚拟机栈、寄存器、程序计数器）
 
-线程共有6个状态：NEW、RUNNABLE、BLOCKED、WAIT、TIMED_WAITING、TERMINATED
+线程共有6个状态：NEW、RUNNABLE、BLOCKED、WAITING、TIMED_WAITING、TERMINATED
 
 - NEW：初始化状态，线程对象被创建后的初始状态
 
@@ -206,7 +217,7 @@ JMM是一套屏蔽不同硬件和操作内存访问差异的规范机制，在JM
 
 ThreadLocal本身不存储数据，而是在每个线程中创建一个ThreadLocalMap，线程访问变量时，其实访问的是自身Map中的变量值，以此实现**线程与线程之间相互隔离**，达到**线程封闭**效果
 
-ThreadLocalMap哈希冲突：使用开放地址法解决哈希冲突，具体采用线性探测
+ThreadLocalMap哈希冲突：使用**开放地址法**解决哈希冲突，具体采用线性探测
 
 内存泄漏：ThreadLocalMap除非在线程结束，否则始终无法被回收
 
