@@ -107,31 +107,57 @@ volatile可以保证共享变量在线程之间的**可见性**与**有序性**�
 
 原理：volatile通过读写屏障使得多级缓存对某变量的写会立即刷回主存，对某变量的读会强制缓存失效并重新从主存中读取，读写屏障硬件语义下为`#lock`指令，触发cpu`mesi一致性协议`
 
+禁止重排序：
+
+1. 当第二个操作是volatile写，不管第一个操作是什么，禁止重排序
+
+2. 当第一个操作是volatile读，不管第二个操作是什么，禁止重排序
+
+3. 当第一个操作是volatile写，第二个操作是volatile读，禁止重排序
+
+    - 第二个操作若是其他操作，可重排：
+
+        ```java
+        volatile boolean flag = false;
+
+        int a = 0;
+
+        public void writer() {
+            // a = 1可能重排到flag = true之前
+            flag = true;
+            a = 1;
+        }
+        ```
+
 # **3. JMM**
 
-为了解决CPU和内存之间的读写速度差异，硬件发展过程中引入了高速缓存（L1、L2、L3三级缓存）弥补之间的差距，但又引入**缓存一致性/可见性问题**，加之编译器与CPU的重排序又引入了**有序性**问题，不同的硬件和操作系统内存也**存在访问差异**，因此需要JMM内存模型对多线程操作下的规范约束，屏蔽底层的差异保证**Java进程在不同的平台下仍能达到一致的内存访问效果**
+为了弥补CPU与内存之间读写速度的差异，硬件发展过程中引入高速缓存（L1、L2、L3三级缓存）弥补差距，随之产生**缓存一致性/可见性问题**，且编译器与CPU的重排序也引入**有序性**问题，不同的硬件和操作系统内存也**存在访问差异**，因此需要JMM内存模型对多线程操作下的规范约束，屏蔽底层的差异保证**Java进程在不同的平台下仍能达到一致的内存访问效果**
 
 - 原子性：JVM保证了lock、unlock、read、load、assign、use、store、write八个基本操作的原子性
 
 - 可见性：通过volatile、final、synchronized的语义保证可见性
 
-- 有序性：通过volatile、synchronized的屏障来禁止cpu对某些指令的重排
+- 有序性：通过读写屏障等方式来禁止cpu对某些指令的重排
 
-happen-before原则：
+    happen-before原则：
 
-1. 程序顺序规则：单线程每个操作，happen-before于该线程的后续操作
+    1. 程序顺序规则：单线程每个操作，happen-before于该线程的后续操作
 
-2. volatile变量规则：对volatile变量的写，happen-before于对该变量的读
+    2. volatile变量规则：对volatile变量的写，happen-before于对该变量的读
 
-3. 传递性规则：若A先于B，B先于C，则Ahapen-beforeC发生
+    3. 传递性规则：若A先于B，B先于C，则Ahapen-beforeC发生
 
-4. 监视器锁规则：对一个监视器锁的unlock，happen-before对该锁的lock
+    4. 监视器锁规则：对一个监视器锁的unlock，happen-before对该锁的lock
 
-5. final变量规则：对final变量的写，happen-before于对final域对象的读，happen-before后续对final变量的读
+    5. final变量规则：对final变量的写，happen-before于对final域对象的读，happen-before后续对final变量的读
 
 ## **统一答复**
 
 JMM是一套屏蔽不同硬件和操作内存访问差异的规范机制，在JMM模型下Java进程在不同平台运行都可以获得一致的内存访问语义，它主要对工作内存和主存的一致性、操作原子性和有序性提出规范：
+
+工作内存：L1、L2、L3和寄存器
+
+主存：物理内存
 
 - 原子性：提供8大原子操作语义，其中lock和unlock对应synchronized的monitorenter和monitorexit
 
@@ -139,9 +165,6 @@ JMM是一套屏蔽不同硬件和操作内存访问差异的规范机制，在JM
 
 - 有序性：通过volatile、synchronized的读写屏障禁止编译器、cpu对某些指令的重排
 
-工作内存：L1、L2、L3和寄存器
-
-主存：物理内存
 
 # **4. 线程**
 
