@@ -143,23 +143,35 @@ EXPLAIN SELECT e FROM `demo` WHERE b = 1 AND f = 0;
 
     - **最左匹配法则**：用于联合索引的判断法则，匹配时按照联合列的从左到右的顺序进行，如果跳过了其中一列，将无法使用联合索引
 
-    - **索引下推**：联合索引范围查询时，在符合最左匹配法则的情况下，依旧可以使用其他顺序列来进行索引筛除，而无需回表
+    - **索引下推**：下推指的是index filter能力从Server层下推到引擎层的索引层面
+
+        效果：联合索引范围查询时，在符合最左匹配法则的情况下，依旧可以使用其他顺序列来进行索引筛除，而无需回表
 
         ![5.6之前没有索引下推会出现回表](https://asea-cch.life/upload/2021/08/%E7%B4%A2%E5%BC%95%E4%B8%8B%E6%8E%A8%E7%9A%84%E8%A7%A3%E9%87%8A-0448432e65a94102a62a722682e36fb4.png)
 
-        > 在5.6之前涉及到联合索引范围查询时，会直接停止联合索引查询，后续的列将无法通过索引进行筛选
+        5.6之前的联合索引范围查询，会直接停止联合索引查询，后续的列将无法通过索引进行筛选（之前的列可以直接使用组合索引判断）
 
         如：
 
-            假设存在联合索引(a, b, c)，sql语句select * from `test` where a >= 1 and b = 1，则b = 1将无法使用到联合索引的筛除，需要回表进行判断
+            假设存在联合索引(a, b, c)，且mysql版本为5.6
+            
+            sql：select * from `test` where a = 1 and b >= 1 and c = 1
+            
+            a = 1 and b >= 1：可以使用组合索引
 
-        根本原因：db处理where条件时，分为index key、index filter和table filter，但5.6之前的index filter是放在mysql server层面，5.6之后将index filter下推到引擎层中实现，这样**大大减少了引擎层返回的无用数据**
+            c = 1：无法使用联合索引的筛除，需要回表判断
 
-        - index key：确定查询在索引的连续位置，即起始位置和结束位置
+        根本原因：db处理where条件后，会分为index key、index filter和table filter三种情况。但5.6之前并不区分index filter和table filter，引擎层会对index key范围内的索引记录都回表读取完整记录，再返回到Mysql Server层进行过滤
+        
+        5.6之后将Index Filter和Table Filter进行分离，并将index filter下推引擎层，引擎层具备索引过滤能力，不再需要回表读取完整记录交由Server层过滤。这样既**减少引擎层的回表次数**，也**减少了引擎层返回数据到Server层的交互开销**
 
-        - index filter：通过index key确定了范围数据后，先过滤掉与where条件相关，但并不匹配结果的索引列条件
+        - index key：确定查询在索引的连续位置，即起始位置和结束位置，至少包含一个起始和一个终止，分为Index First Key和Index Last Key
 
-        - table filter：where中不能用索引处理的，需要回表进行过滤
+            > 匹配数量占比大于0.875，且不是覆盖查询，则直接走table filter进行全表扫描
+
+        - index filter：**用索引**对index key的范围数据进行where条件过滤
+
+        - table filter：where中不能用索引处理的，需要**回表**进行过滤
 
 ## **2.4 索引失效/不适用场景**
 
@@ -182,19 +194,31 @@ EXPLAIN SELECT e FROM `demo` WHERE b = 1 AND f = 0;
 
         思维：`不满足覆盖索引需要回表`，且回表查询的成本与全表扫描相差不大，当未命中行数占总数12.5%左右
 
-        - != 、NOT IN：一般情况下，这两种操作在第一步会选择表中**绝大部分**数据，使得回表操作跟一开始就全表扫描一样
+        - NOT LIKE 、NOT IN
 
         - IN(多个参数)
 
-        - \>, <等范围查找 
+        - 匹配行数大于总数的0.875比例会选择走全表，包括：!=、>、<、like，一般情况下，这两种操作在第一步会选择表中**绝大部分**数据，使得回表操作跟一开始就全表扫描一样
 
-        - 使用参数、表达式作为条件
+            > 全表扫描顺序I/O，索引读取到主键值后再回表查是随机I/O
+
+        - 条件对索引值进行表达式计算，或使用了函数
+
+            ```sql
+            select * from `user` where id + 1 = 10;
+
+            -- 应转换为：select * from `user` where id = 10 - 1才可能走索引
+
+            select * from `user` where length(id) = 6;
+            ```
 
         - 使用左模糊条件：`like '%xxx'`，这种方式不符合最左匹配法则
 
         - or：只要有部分条件没有索引，且需要回表查找，就会走全表扫描
 
-        - 需要类型转换：如字符串没有用单括号
+        - 类型转换
+        
+            mysql的数字字符串与数字对比时，会自动转化为数字，反过来则不行
 
     > !=不一定就不走索引，根据比重分析
 
@@ -216,7 +240,7 @@ EXPLAIN SELECT e FROM `demo` WHERE b = 1 AND f = 0;
 
     - S锁：读锁（共享锁），**读读不互斥，读写互斥**，涉及的操作有：`select ... lock in share mode`、`select ... for share`
 
-    - IX（意向写锁）、IS（意向读锁）：意向锁，表锁和行锁进行冲突检测的fail-fast机制
+    - IX（意向写锁）、IS（意向读锁）：意向锁，**表锁**和**行锁**进行冲突检测的fail-fast机制
 
         表锁与行锁冲突，如果没有意向锁，则需要通过遍历手段来检测哪一行有行锁，效率低下
 
@@ -232,13 +256,7 @@ EXPLAIN SELECT e FROM `demo` WHERE b = 1 AND f = 0;
 
         - 范围条件：命中值时，选取当前索引值的上/下一个值作为左/右开区间，并根据剩余值割裂出多个全闭区间，共同组成生效范围
 
-        间隙锁出现的场景：
-
-        - sql是一个`范围的当前读`操作
-
-        - sql走的索引是`非唯一索引`
-
-        这也意味着如果索引走唯一索引，且为等值当前读，将不会产生间隙锁
+        间隙锁出现的场景：sql走的索引是`非唯一索引`，这也意味着如果索引走唯一索引，将不会产生间隙锁
 
     - NEXT KEY LOCK：RECORD + GAP组合
 
@@ -360,8 +378,6 @@ EXPLAIN SELECT e FROM `demo` WHERE b = 1 AND f = 0;
 
             - 后台处理：通过多线程全表扫，再聚合最终结果来做，以异步的形式实现
 
-**sharding key**：
-
 # **7. 日志，主从同步**
 
 ![RC搭配ROW格式binlog导致问题](https://asea-cch.life/upload/2022/01/RC%E6%90%AD%E9%85%8DROW%E6%A0%BC%E5%BC%8Fbinlog%E5%AF%BC%E8%87%B4%E9%97%AE%E9%A2%98-b06485d318de492d832da3f98c986415.JPG)
@@ -406,6 +422,14 @@ EXPLAIN SELECT e FROM `demo` WHERE b = 1 AND f = 0;
 
 ![mysql乐观锁悲观锁疑问](https://asea-cch.life/upload/2022/01/mysql%E4%B9%90%E8%A7%82%E9%94%81%E6%82%B2%E8%A7%82%E9%94%81%E7%96%91%E9%97%AE-6d3a56b3592c472d9dd56b9caaa39b13.JPG)
 
+# **9. count(*)、count(1)、count(字段)效率**
+
+count(*) = count(1) > count(主键字段) > count(字段)
+
+扫描时优先通过二级索引进行查询，因为二级索引占用空间更小，遍历二级索引的I/O成本更低
+
+*、1、0：表示\* != null、1 != null、0 != null的意思，言外之意就是不管是否为null都会计数，这样就无需读取行字段的值，效率更高
+
 # 参考
 - [数据库索引的知识点](https://segmentfault.com/a/1190000023314270)：索引类型（按结构划分）、聚簇索引、非聚簇索引、覆盖索引、索引种类（按作用范围）、最左匹配法则、`索引失效场景`、`索引不适用场景`
 
@@ -414,6 +438,8 @@ EXPLAIN SELECT e FROM `demo` WHERE b = 1 AND f = 0;
 - [B+树节点有多大](https://blog.csdn.net/dl674756321/article/details/102987984)：B+树高度低，能减少I/O次数，跳表、B树高度较高，Hash不支持联合索引的最左匹配，范围查询
 
 - [关于MySQL buffer pool的预读机制](https://www.cnblogs.com/geaozhang/p/7397699.html)
+
+- [单表查询 + 代码层处理](https://zhuanlan.zhihu.com/p/350841054)
 
 # 重点参考
 - [mysql 物理顺序_实验：innodb 的存储顺序是否完全物理无关？](https://blog.csdn.net/weixin_35531726/article/details/113441137)：innodb在ibd文件中存储的数据，无论是页之间还是页内记录都是**物理顺序无关**的，页内记录的物理无关只限制在页内，不能跨越到其他页中
