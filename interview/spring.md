@@ -1,10 +1,10 @@
 # interview eight：Spring
 
-- 单例模式：Bean默认情况下都是单例
+- `工厂模式`：通过BeanFactory和ApplicationContext来生产Bean对象
 
-- 工厂模式：通过BeanFactory和ApplicationContext来生产Bean对象
+- `单例模式`：Bean默认情况下都是单例
 
-- 代理模式：AOP代理，JDK代理和CGLIB代理
+- `代理模式`：AOP代理，JDK代理和CGLIB代理
 
 - 模板方法：Jdbc
 
