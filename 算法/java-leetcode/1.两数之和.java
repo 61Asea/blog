@@ -1,3 +1,6 @@
+import java.util.HashMap;
+import java.util.Map;
+
 /*
  * @lc app=leetcode.cn id=1 lang=java
  *
@@ -58,7 +61,28 @@
 // @lc code=start
 class Solution {
     public int[] twoSum(int[] nums, int target) {
-        
+        // 1. 暴力求解
+        // int res[] = new int[2];
+        // for (int i = 0; i < nums.length; i++) {
+        //     for (int j = i + 1; j < nums.length; j++) {
+        //         if (nums[i] + nums[j] == target) {
+        //             res[0] = i;
+        //             res[1] = j;
+        //             return res;
+        //         }
+        //     }
+        // }
+        // return null;
+
+        // 2. 哈希表缓存遍历值
+        Map<Integer, Integer> hashtable = new HashMap<>();
+        for (int i = 0; i < nums.length; i++) {
+            if (hashtable.containsKey(target - nums[i])) {
+                return new int[]{i, hashtable.get(target - nums[i])};
+            }
+            hashtable.put(nums[i], i);
+        }
+        return null;
     }
 }
 // @lc code=end

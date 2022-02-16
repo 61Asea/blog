@@ -148,11 +148,13 @@ MSL：数据包在网络发送中的最大生存时间，超过该时间的数�
 
 **5. 浏览器请求一个网站的过程**
 
-1. 通过dns服务器解析域名获得IP地址，通过子网掩码判断IP地址是否处于同一个子网
+1. 通过dns服务器解析域名获得IP地址，通过子网掩码判断IP地址是否处于同一个子网，如果是同一个子网可直接连接，否则需要经过路由器、交换机的传输
 
-2. 应用层构造http请求报文，传输层添加tcp首部，IP层添加IP头，数据链路层添加以太网协议首部
+2. 与目标主机建立TCP连接
 
-3. 经过路由器、交互机的传输，请求最终到达目标服务器，反向进行解析获得http报文进行处理
+3. 连接建立成功后，应用层构造http请求报文，传输层添加tcp首部，IP层添加IP头，数据链路层添加以太网协议首部
+
+4. 交互完毕后，与目标主机断开TCP连接
 
 # **6. HTTPS的工作原理（安全证书交换过程）**
 
@@ -194,7 +196,13 @@ POST：增删改服务器资源
 
     - GET：幂等，只读查询执行几次结果都是一样的
 
-结论：GET资源安全且幂等，POST资源不安全且不幂等；GET效率更高因为其可被浏览器缓存；查询数据使用GET，增删改数据使用POST；GET和POST在不同浏览器上的报文发送实现方式不同，GET普遍一个报文，POST可能为两个报文
+结论：
+- GET资源安全且幂等，POST资源不安全且不幂等
+- GET效率更高因为其可被浏览器缓存
+- 查询数据使用GET，增删改数据使用POST
+- GET和POST在不同浏览器上，TCP报文发送方式不同，GET普遍一个报文，POST可能分为为两个报文（一个http header，一个data）
+- **GET的数据只支持ASCII字符，拼接在url上，长度有限制最大为2048个字符（URL长度限制）；POST没有长度限制，也支持二进制**
+- 现实安全性而言，GET会把数据拼接在url上，可能会被人窥见
 
 # **8. http1.1特性**
 
@@ -287,6 +295,8 @@ POST：增删改服务器资源
 - [常考的 BIO，NIO，AIO 总结](https://blog.csdn.net/m0_38109046/article/details/89449305)
 - [get请求可以被缓存](https://segmentfault.com/q/1010000021784624)
 - [TLS四次握手](https://zhuanlan.zhihu.com/p/156034207)
+
+- [浏览器中网址访问过程](https://blog.csdn.net/m_buddy/article/details/77800998)
 
 # 重点参考
 - [网络篇夺命连环12问](https://mp.weixin.qq.com/s?__biz=MzkzNTEwOTAxMA==&mid=2247488227&idx=1&sn=36587eab67d87824179dd5edda3533db&chksm=c2b25a1ef5c5d308ae02ba5a2e5922738fd43305faf74c41320272acecc77d6a155eb50ad33a&token=982147105&lang=zh_CN&scene=21#wechat_redirect)
