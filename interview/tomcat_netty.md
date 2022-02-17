@@ -20,7 +20,7 @@
 
     - 异步：由**内核占用CPU**将数据拷贝到进程中，完成后通知进程，进程在此期间可以处理自己的任务
 
-- 阻塞、非阻塞：指进程在**发起I/O请求**后（kernel数据准备中）是否处于阻塞状态
+- 阻塞、非阻塞：指进程在**发起I/O请求**后，是否处于阻塞状态
 
     - 阻塞I/O模型：同步阻塞I/O
 
@@ -54,18 +54,51 @@
 
     - I/O密集型系统：表现佳（如node.js、aio）
 
-# **3. BIO、NIO、AIO**
+# **3. select()与epoll()的区别**
+
+两者都用于监视多个socket句柄的状态，epoll相比select更加高效
+
+select()：
+
+1. 传入socket列表FD_SET，遍历FD_SET并将进程加入到各fd的等待队列中，阻塞进程
+
+    第一次遍历FD_SET，且涉及FD_SET到内核的内存拷贝
+
+2. 某socket接收到数据，发出cpu中断信号，cpu执行中断程序进行数据搬运，并唤醒进程
+
+    - 数据搬运：数据从网卡缓冲区搬运到kernel socket buffer
+
+        > DMA：进行 I/O 设备和内存的数据传输的时候，数据搬运的工作全部交给 DMA 控制器，而 CPU 不再参与任何与数据搬运相关的事情
+
+        优化后步骤：某socket接收到数据后，向DMA发起中断信号，由DMA负责数据搬运而不占用CPU，DMA读完数据后再向CPU发起中断信号，`CPU执行中断程序后直接唤醒进程即可`
+
+    - 唤醒进程：将进程从所有socket fd的等待队列中移除
+
+    第二次遍历FD_SET
+
+3. 进程只知道至少有一个socket接收了数据，需要遍历FD_SET获取就绪的fd
+
+    第三次遍历FD_SET
+
+    NIO：通过mmap() + 堆外内存直接打通了kernel socket buffer到用户空间，无需内存拷贝
+
+# **4. BIO、NIO、AIO**
 
 - BIO：
 
-# **4. Reactor**
+# **5. Reactor**
 
-# **5. netty的线程模型**
+# **6. netty的线程模型**
 
-# **6. tomcat的线程模型**
+# **7. tomcat的线程模型**
 
-# **7. 什么是粘包、半包，如何解决**
+# **8. 什么是粘包、半包，如何解决**
+
+# **9. 零拷贝**
 
 # 参考
 
 - [网络篇夺命连环12问](https://mp.weixin.qq.com/s?__biz=MzkzNTEwOTAxMA==&mid=2247488227&idx=1&sn=36587eab67d87824179dd5edda3533db&chksm=c2b25a1ef5c5d308ae02ba5a2e5922738fd43305faf74c41320272acecc77d6a155eb50ad33a&token=982147105&lang=zh_CN&scene=21#wechat_redirect)
+
+# 重点参考
+- [从底层介绍epoll（相当全面）](https://www.toutiao.com/i6683264188661367309/)
