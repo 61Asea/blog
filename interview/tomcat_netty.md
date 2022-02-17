@@ -58,37 +58,87 @@
 
 两者都用于监视多个socket句柄的状态，epoll相比select更加高效
 
-select()：
+- select()：
 
-1. 传入socket列表FD_SET，遍历FD_SET并将进程加入到各fd的等待队列中，阻塞进程
+    1. 传入socket列表FD_SET，遍历FD_SET并将进程加入到各fd的等待队列中，阻塞进程
 
-    第一次遍历FD_SET，且涉及FD_SET到内核的内存拷贝
+        第一次遍历FD_SET，且涉及FD_SET到内核的内存拷贝
 
-2. 某socket接收到数据，发出cpu中断信号，cpu执行中断程序进行数据搬运，并唤醒进程
+    2. 某socket接收到数据，发出cpu中断信号，cpu执行中断程序进行数据搬运，并唤醒进程
 
-    - 数据搬运：数据从网卡缓冲区搬运到kernel socket buffer
+        - 数据搬运：数据从网卡缓冲区搬运到kernel socket buffer
 
-        > DMA：进行 I/O 设备和内存的数据传输的时候，数据搬运的工作全部交给 DMA 控制器，而 CPU 不再参与任何与数据搬运相关的事情
+            > DMA：进行 I/O 设备和内存的数据传输的时候，数据搬运的工作全部交给 DMA 控制器，而 CPU 不再参与任何与数据搬运相关的事情
 
-        优化后步骤：某socket接收到数据后，向DMA发起中断信号，由DMA负责数据搬运而不占用CPU，DMA读完数据后再向CPU发起中断信号，`CPU执行中断程序后直接唤醒进程即可`
+            优化后步骤：某socket接收到数据后，向DMA发起中断信号，由DMA负责数据搬运而不占用CPU，DMA读完数据后再向CPU发起中断信号，`CPU执行中断程序后直接唤醒进程即可`
 
-    - 唤醒进程：将进程从所有socket fd的等待队列中移除
+        - 唤醒进程：将进程从所有socket fd的等待队列中移除
 
-    第二次遍历FD_SET
+        第二次遍历FD_SET
 
-3. 进程只知道至少有一个socket接收了数据，需要遍历FD_SET获取就绪的fd
+    3. 进程只知道至少有一个socket接收了数据，需要遍历FD_SET获取就绪的fd
 
-    第三次遍历FD_SET
+        第三次遍历FD_SET
 
-    NIO：通过mmap() + 堆外内存直接打通了kernel socket buffer到用户空间，无需内存拷贝
+        NIO：通过mmap() + 堆外内存直接打通了kernel socket buffer到用户空间，无需内存拷贝
+
+- epoll()：
+
+    1. 通过epoll()的函数对fd进行注册
+
+    - epoll_create()：创建epfd（eventpoll）
+    - epoll_ctl()：添加需要监视的socket fd到epfd中，内核会将eventpoll加入到这些socket的等待队列
+    - epoll_wait()：进程进入epfd的等待队列中，进入阻塞状态
+
+        监视的socket fd基本不会变动，后续无需每次都进行注册，进一步减少了第一次遍历
+
+    2. socket接收到数据后，向DMA发起中断信号。DMA读取数据完毕后，向CPU发起中断信号执行中断程序，cpu将执行**设备驱动回调**，将就绪的文件描述符加入到epfd的rblist就绪队列中
+
+        epfd作为进程与socket的中介者，socket的等待队列将一直持有eventpoll引用，无需移出队列减少了select第二次遍历
+
+    3. 驱动将fd加入rblist后，唤醒在epfd等待队列上的进程
+
+        进程可直接在rblist中获取到就绪fd，减少了select的第三次遍历
+
+总结：
+
+1. 句柄数增多导致的性能问题
+
+    - select()/poll()：需要对FD_SET进行三次线性遍历，在句柄数越多时表现越差，select最多监视1024个，poll使用链表结构可以监视更多句柄，但依旧没有改善效率低的问题
+
+    - epoll()：没有影响，因为是通过注册设备回调实现就绪列表rblist，只有活跃的socket才会主动调用，进程可以直接从就绪队列获取到就绪
+
+2. 消息传递方式
+
+    - select()：将FD_SET从用户空间中拷贝到内核空间
+
+    - epoll()：内核和用户进程共享内存（mmap()）
+
+3. 监视方式：都在阻塞状态中由中断信号唤醒，select()由socket直接唤醒，epoll()由socket间接通过eventpoll唤醒
 
 # **4. BIO、NIO、AIO**
 
-- BIO：
+- BIO：同步阻塞I/O，进程在发起I/O请求后进入阻塞状态等待I/O完成
+
+    网络结构：one connection per thread，每个客户端连接都对应一个处理线程，没有分配到线程的连接会阻塞等待或拒绝
+
+- NIO：同步非阻塞I/O，进程发起I/O请求后不会进入阻塞状态，基于Reactor模型下对channel进行读写操作会立即返回，由多路复用器selector来监视注册的fd并进行数据读写操作
+
+    网络结构：多个socket绑定同一I/O线程
+
+- AIO：异步I/O，进程发起I/O请求后不会进入阻塞状态，由内核占用cpu完成对I/O请求的处理，并通知进程进行处理
+
+    网络结构：nodejs
 
 # **5. Reactor**
 
+Reactor模型分为：reactor和handler，前者负责I/O事件的监听与**分发**，后者负责I/O事件**绑定与处理**
+
+- 单Reactor单线程模型
+
 # **6. netty的线程模型**
+
+多Reactor多线程模型
 
 # **7. tomcat的线程模型**
 
