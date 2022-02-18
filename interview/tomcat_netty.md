@@ -87,7 +87,7 @@
     1. 通过epoll()的函数对fd进行注册
 
     - epoll_create()：创建epfd（eventpoll）
-    - epoll_ctl()：添加需要监视的socket fd到epfd中，内核会将eventpoll加入到这些socket的等待队列
+    - epoll_ctl()：添加需要监视的socket fd到epfd中，**内核会将eventpoll加入到这些socket的等待队列**
     - epoll_wait()：进程进入epfd的等待队列中，进入阻塞状态
 
         监视的socket fd基本不会变动，后续无需每次都进行注册，进一步减少了第一次遍历
@@ -110,9 +110,11 @@
 
 2. 消息传递方式
 
-    - select()：将FD_SET从用户空间中拷贝到内核空间
+    - select()：每次调用select()都会将FD_SET从用户空间中拷贝到内核空间
 
-    - epoll()：内核和用户进程共享内存（mmap()）
+    - epoll()：fd存放在内核eventpoll中，在**用户空间和内核空间的copy仅需一次**
+
+    > epoll没有使用mmap！
 
 3. 监视方式：都在阻塞状态中由中断信号唤醒，select()由socket直接唤醒，epoll()由socket间接通过eventpoll唤醒
 
