@@ -4,10 +4,12 @@
 - I/O模型：同步阻塞模型、同步非阻塞模型、异步模型
 - select()/poll()和epoll()的区别
 - Reactor模型
-- Netty和Tomcat的线程模型
+- Netty线程模型
 - 半包、粘包问题
+- MappedByteBuffer、DirectByteBuffer、malloc()
+- 大端小端问题
 - 零拷贝：sendfile + mmap()
-- netty与malloc()
+- Tomcat线程模型
 - actor
 
 # **1. 同步/异步、阻塞和非阻塞**
@@ -96,14 +98,20 @@
 
         第三次遍历FD_SET，这次遍历在进程用户空间进行，主要是获知已就绪的fd
 
-        NIO：通过mmap() 直接打通了kernel socket buffer到用户空间，无需内存拷贝，具体实现是使用DirectByteBuffer
+        NIO：通过mmap() 直接打通了kernel socket buffer到用户空间，无需内存拷贝，具体实现是使用DirectByteBuffer（extends `MappedByteBuffer`）
 
 - epoll()：
 
     1. 通过epoll()的函数对fd进行注册
 
     - epoll_create()：创建epfd（eventpoll）
+    
+        - epfd：本身就是一个红黑树，用于存储注册在其上的句柄，从而**避免每次调用都需要传入fd集合产生拷贝**
+        
+        - epfd.rdlist：epfd包含一个双向链表实现的就绪队列，当有socket的数据就绪后，将由DMA、CPU配合执行中断程序将就绪fd加入到队列中，从而避免每次进程还需重新遍历fd集合获取就绪的fd
+    
     - epoll_ctl()：添加需要监视的socket fd到epfd中，**内核会将eventpoll加入到这些socket的等待队列**
+
     - epoll_wait()：进程进入epfd的等待队列中，进入阻塞状态
 
         监视的socket fd基本不会变动，后续无需每次都进行注册，进一步减少了第一次遍历
@@ -112,9 +120,9 @@
 
         epfd作为进程与socket的中介者，socket的等待队列将一直持有eventpoll引用，无需移出队列减少了select第二次遍历
 
-    3. 驱动将fd加入rblist后，唤醒在epfd等待队列上的进程
+    3. 驱动将就绪socket fd加入rdlist，并唤醒在epfd等待队列上的进程
 
-        进程可直接在rblist中获取到就绪fd，减少了select的第三次遍历
+        进程可直接在rdlist中获取到就绪fd，减少了select的第三次遍历
 
 总结：
 
@@ -140,9 +148,9 @@
 
     网络结构：one connection per thread，每个客户端连接都对应一个处理线程，没有分配到线程的连接会阻塞等待或拒绝
 
-- NIO：同步非阻塞I/O，进程发起I/O请求后不会进入阻塞状态，基于Reactor模型下对channel进行读写操作会立即返回，由多路复用器selector来监视注册的fd并进行数据读写操作
+- NIO：同步非阻塞I/O，进程发起I/O请求后不会进入阻塞状态，对channel进行读写操作会立即返回，由多路复用器selector来监视注册的fd并进行数据读写操作
 
-    网络结构：多个socket绑定同一I/O线程
+    网络结构：基于Reactor模型，由reactor（selector）提供句柄描述符的注册/回调机制，并根据就绪事件类型分发到不同的handler中进行处理（OP_ACCEPT、OP_READ、OP_WRITE）
 
 - AIO：异步I/O，进程发起I/O请求后不会进入阻塞状态，由内核占用cpu完成对I/O请求的处理，并通知进程进行处理
 
@@ -154,29 +162,83 @@ Reactor模型分为：
 
 - `reactor`：负责I/O事件的监听（查询与响应），当检测到I/O事件时，分发给handlers处理
 
-- `handler`：与I/O事件进行**绑定**，负责I/O事件的处理
+- `handlers`：与I/O事件进行**绑定**，负责I/O事件的处理
 
-1. 单Reactor单线程模型
+1. 单Reactor单线程模型：reactor与handlers共用一个线程，reactor需要监视所有的事件，某个handler的阻塞将直接影响其他handler的执行，**无法充分利用多核的性能**
 
+    - 核心问题：
+        
+        1. 没有将非I/O部分的操作（如：decode、compute、encode）与handlers进行剥离
 
+        2. reactor监视所有的事件
 
-2. 单Reactor多线程模型
+例子：如果某个handler执行业务时长过久，服务将无法进行其他socket fd的建立、读取工作
 
-3. 多Reactor多线程模型
+2. 单Reactor多线程模型：将业务从handlers中剥离开，使用线程池进行处理，handlers只负责I/O操作
+
+    - 核心问题：reactor与handlers依旧共用主I/O线程，reactor仍需要监视所有的事件
+
+例子：如果突然间服务有大量的连接建立到来，则这种瞬时的连接高并发可能会导致**其他类型的就绪事件的处理不及时**（如OP_READ、OP_WRITE）
+
+3. `多Reactor多线程模型`：**主流方案**，将reactor分为多主多从关系（通常一主多从），每个reactor都有自己的selector，主reactor负责建立连接，从reactor负责客户端fd的I/O读写，具体业务则交由业务线程池进行
+
+    缓解单Reactor的压力，松耦合OP_ACCEPT、OP_READ/OP_WRITE进一步利用多核心优势
+
+例子：netty的bossWorkGroup和workerWorkGroup
 
 # **6. netty的线程模型**
 
-多Reactor多线程模型
+线程模型：`多Reactor多线程`模型，每个reactor都有一个selector以注册句柄的感兴趣事件，通过主Reactor并按某种规则分发client fd到`从Reactor`中
 
-# **7. tomcat的线程模型**
+- 主Reactor：boss线程组，负责连接建立、分发连接到从Reactor
 
-# **8. 什么是粘包、半包，如何解决**
+    - 角色：Acceptor（OP_ACCEPT事件）
 
-# **9. 零拷贝**
+    - 监视句柄：listen socket fd
 
-# **10. malloc()**
+    - 驱动方式：selector阻塞，当有就绪OP_ACCEPT事件发生时被唤醒，进行acceptor逻辑操作
 
-# **11. Actor模型思想**
+    - 具体逻辑：非阻塞accept()方法，使用while(1)从全连接队列中取出三次握手完毕的客户端句柄
+
+- 从Reactor：worker线程组，负责client fd的**I/O读写**、业务线程池投递
+
+    - 角色：handlers（OP_READ/OP_WRITE）
+
+    - 监视句柄：client socket fd
+
+    - 驱动方式：selector阻塞，当有就绪的OP_READ、OP_WRITE事件发生时被唤醒
+
+    - 具体方式：非阻塞读/写，使用while(1)进行读写操作直至抛出EWOULDBLOCK异常
+
+        > 非阻塞读/写：被唤醒只是知道有就绪的fd，可以从rdlist（selectedKeys）中取出，但具体能读、写的数据量不确定，可将未完成的读、写放到下次epoll_wait()周期；而如果使用阻塞读/写将直接导致该I/O线程阻塞，影响其他句柄的I/O读写
+
+- 业务线程池：用于剥离`从Reactor`的非I/O操作（如：decode、compute、encode），专注于业务逻辑的处理
+
+# **7. 什么是粘包、半包，如何解决**
+
+# **8. MappedByteBuffer、DirectByteBuffer、malloc()**
+
+JDK.NIO高性能：
+
+- MappedByteBuffer：对应使用`mmap()`的虚拟内存，由FileChannel.map()实现
+
+    - mmap()：内存映射文件，将**一个文件映射到用户进程的地址空间**，实现外设地址与进程虚拟地址空间的一段虚拟地址对应关系
+        
+        - 进程视角：采用指针直接读写操作这一段内存，避免调用read()、write()产生内存拷贝开销
+
+        - 内核视角：内核对该区域的修改将直接反映到用户空间，从而实现不同进程间的文件共享
+
+- DirectByteBuffer：堆外直接内存，继承于MappedByteBuffer
+
+# **9. Netty的零拷贝实现**
+
+
+
+# **10. 大/小端**
+
+# **11. tomcat的线程模型**
+
+# **12. Actor模型思想**
 
 # 参考
 
