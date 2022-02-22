@@ -142,6 +142,10 @@
 
 3. 监视方式：都在阻塞状态中由中断信号唤醒，select()由socket直接唤醒，epoll()由socket间接通过eventpoll唤醒
 
+# **3附加. JDK的epoll空转bug**
+
+
+
 # **4. BIO、NIO、AIO**
 
 - BIO：同步阻塞I/O，进程在发起I/O请求后进入阻塞状态等待I/O完成
@@ -155,6 +159,10 @@
 - AIO：异步I/O，进程发起I/O请求后不会进入阻塞状态，由内核占用cpu完成对I/O请求的处理，并通知进程进行处理
 
     网络结构：nodejs
+
+# **4附加：NIO的buffer是双向的吗？**
+
+
 
 # **5. Reactor**
 
