@@ -162,7 +162,11 @@
 
 # **4附加：NIO的buffer是双向的吗？**
 
+是的，通过buffer进行数据的读入与写出，nio中需要调用filp()方法进行读/写模式的切换，而netty则通过维护读、写指针简化操作
 
+- nio：读写共用position指针
+
+- netty：分为readerIndex读指针、writeIndex写指针
 
 # **5. Reactor**
 
@@ -224,6 +228,8 @@ Reactor模型分为：
 
 # **7. 什么是粘包、半包，如何解决**
 
+
+
 # **8. MappedByteBuffer、DirectByteBuffer、malloc()**
 
 JDK.NIO高性能：
@@ -236,13 +242,75 @@ JDK.NIO高性能：
 
         - 内核视角：内核对该区域的修改将直接反映到用户空间，从而实现不同进程间的文件共享
 
-- DirectByteBuffer：堆外直接内存，继承于MappedByteBuffer
+- DirectByteBuffer：堆外直接内存，继承于MappedByteBuffer，由ByteUtils.allocate()或Channel.map()方法获得
+
+    - ByteUtils.allocate()：调用Unsafe.allocateMemory0 => os:malloc申请内存
+
+    - Channel.map()：调用FileChannel.map() => kernel.mmap64得到虚拟内存地址
+
+    > linux下申请内存就是通过`brk()`和`mmap()`两个系统调用，除了这两个之外的内存管理函数（如malloc()），都是上层运行库封装出来的，底层都要走到这两个函数调用上
 
 # **9. Netty的零拷贝实现**
 
+读取磁盘数据，然后发送数据：
 
+- 传统I/O，使用`read()、write()`
 
-# **10. 大/小端**
+    - 上下文切换：4次，每个系统调用会产生两次上下文切换
+
+    - 内存拷贝：4次
+
+        - 第一次：从磁盘内存缓冲区拷贝到kernel page cache中（DMA）
+        - 第二次：从kernel page cache中拷贝到用户进程堆空间（CPU）
+        - 第三次：从用户进程堆空间拷贝到kernel socket buffer（CPU）
+        - 第四次：从kernel socket buffer拷贝到网卡高速缓存（DMA）
+
+    - 优化思路：减少到用户空间的拷贝开销
+
+- 在无须修改数据的情况下，使用`sendfile() + SG-DMA`
+
+    - 上下文切换：2次，sendfile()合并了read和write
+
+    - 内存拷贝：2次
+
+        - 第一次：从磁盘内存缓冲区拷贝到kernel page cache（DMA）
+        - 第二次：从kernel page cache拷贝到网卡高速缓存（SG-DMA）
+
+    - 效果：由于无须修改数据，完全绕开了用户空间的拷贝；并且通过SG-DMA直接进入到网卡高速缓存中
+
+- **在需要修改数据的情况下，使用`mmap() + write()`**
+
+    > netty的directByteBuf、jdknio的directByteBuffer使用这种方式：mmap()虚拟内存对应映射socket fd（虚拟空间映射kernel socket buffer + kernel socket buffer映射socket fd）
+
+    - 上下文切换：4次
+
+    - 内存拷贝：3次
+
+        - 第一次：从磁盘内存缓冲区拷贝到kernel page cache（DMA）
+        - 第二次：从kernel page cache中拷贝到kernel socket buffer（CPU）
+        - 第三次：从kernel socket buffer拷贝到网卡高速缓存中（DMA）
+
+    - 优化思路：不可避免需要进程操作，则使用mmap()建立起虚拟内存与文件的映射，避免内核缓冲区到用户进程堆空间的拷贝
+
+- 大文件传输，使用`异步I/O + 直接I/O`
+
+    > 不使用page cache的称为直接I/O，反过来称为缓存I/O
+
+    - 上下文切换：4次，依旧使用read()和write()
+
+    - 内存拷贝：3次
+
+        - 第一次：将数据从磁盘内存缓冲区拷贝到用户空间，通过异步I/O进行通知（DMA）
+
+        - 第二次：用户空间拷贝到kernel socket buffer（CPU）
+
+        - 第三次：kernel socket buffer到网卡高速缓存（DMA）
+
+    - 优化思路：绕开page cache，以免因为填充page cache，导致预读功能无效化影响小文件的传输效率
+
+结论：传输大文件时，使用异步I/O+直接I/O；传输小文件时，使用零拷贝技术
+
+# **10. 大/小端，高/低水位**
 
 # **11. tomcat的线程模型**
 
@@ -255,3 +323,4 @@ JDK.NIO高性能：
 # 重点参考
 - [从底层介绍epoll（相当全面）](https://www.toutiao.com/i6683264188661367309/)
 - [Netty系列文章之Netty线程模型](https://juejin.cn/post/6844903974298976270)
+- [小林coding-8张图搞懂「零拷贝」](https://zhuanlan.zhihu.com/p/258513662)
