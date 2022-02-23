@@ -1,152 +1,38 @@
 # interview ten：tomcat + netty
 
-- 同步/异步、阻塞/非阻塞
+<!-- - 同步/异步、阻塞/非阻塞
 - I/O模型：同步阻塞模型、同步非阻塞模型、异步模型
-- select()/poll()和epoll()的区别
+- select()/poll()和epoll()的区别 -->
+- epoll空轮询bug
+    - netty/jetty解决方案
+- BIO/NIO/AIO
+- NIO buffer双向性
 - Reactor模型
 - Netty线程模型
-- 半包、粘包问题
-- MappedByteBuffer、DirectByteBuffer、malloc()
-- 大端小端问题
-- 零拷贝：sendfile + mmap()
+- 黏包、粘包问题
+- 大/小端、高/低水位
+- MappedByteBuffer、DirectByteBuffer与malloc()/mmap()的关系
+- 传统I/O/mmap() + write/零拷贝/大文件传输
 - Tomcat线程模型
 - actor
 
-# **1. 同步/异步、阻塞和非阻塞**
+# **1. JDK的epoll空轮询bug**
 
-> 如何理解同步和阻塞
+bug表现：在进程while(1)循环中调用select()，select()无法阻塞且返回0事件，导致while(1)一直执行空跑CPU直至100%
 
-以`进程`视角分为两个步骤：
+操作系统原因：Linux2.6的内核中，poll和epoll对于**突然中断的连接socket**，会对返回的事件集合（eventSet）置为POLLHUP/POLLERR，从而使得eventSet发送变化，导致Selector被唤醒
 
-1. 发起I/O请求
+Jetty/Netty解决方案：
 
-2. 实际的I/O读写操作
+1. 新增select死循环阈值、0事件唤醒计数器
 
-以`操作系统`视角分为两个步骤：
+2. 计算从select调用前到被唤醒的时长t1，对比select()函数传入的阻塞时间t2，若t1 < t2 && select返回0，则计数器递增1
 
-1. kernel数据准备，将数据从**磁盘缓冲区搬运都内核缓冲区**（DMA）
+3. 当计数器达到死循环阈值，则触发bug修复逻辑
 
-2. 将数据从内核空间拷贝到进程空间中（CPU）
+    修复逻辑：**新起一个selector**，复制SelectionKey关注的事件到新的selector中，使用新的selector进行阻塞
 
-- 同步、异步：指是否由**进程自身占用CPU**，将数据从内核拷贝到进程空间中，是的话为同步，否则为异步
-
-    - 异步：由**内核占用CPU**将数据拷贝到进程中，完成后通知进程，进程在此期间可以处理自己的任务
-
-- 阻塞、非阻塞：指进程在**发起I/O请求**后是否处于阻塞状态
-
-    - 阻塞I/O模型：同步阻塞I/O
-
-    - 非阻塞I/O模型：同步非阻塞I/O（包括I/O多路复用）、异步I/O
-
-    BIO会阻塞，NIO不会阻塞，`对于NIO而言通过channel进行IO操作请求后，其实就返回了`
-
-# **2. I/O模型**
-
-1. 同步阻塞I/O
-
-    进程视角：进程在发起I/O请求后**阻塞至I/O读写操作完毕**
-    
-    系统视角：等待kernel数据完毕后，**进程自身占用cpu拷贝**
-
-    数据由DMA从磁盘/网卡搬运到内核空间中，再由中断信号唤醒进程，进程占用CPU将数据从内核空间拷贝到用户空间
-
-2. 同步非阻塞I/O：可直接代指I/O多路复用
-
-    进程视角：进程在发起I/O请求后**可以立即返回**
-    
-    系统视角：当kernel数据准备完毕后，需**进程自身占用cpu拷贝**
-
-    `I/O多路复用`：进程发起I/O请求后可以立即返回，由一个I/O线程（selector）检测多个注册在其上句柄的就绪状态：
-
-    - select、poll：将进程加入到socket的等待队列中，由socket接收完毕数据后唤醒
-
-    - epoll：引入eventpoll epfd作为进程与socket的中介，socket完毕后会调用中断程序使得rdlist持有socket的引用，实现句柄就绪后的通知
-
-3. 异步I/O
-
-    进程视角：进程在发起I/O请求后不会进入阻塞状态
-    
-    系统视角：kernel数据准备完毕后，由**内核占用cpu拷贝**到进程空间，完成后通知进程
-
-    - CPU密集型系统：表现不佳，因为内核占用cpu势必导致进程的cpu可分配资源降低，会增加该类型系统计算延时
-
-    - I/O密集型系统：表现佳（如node.js、aio）
-
-# **3. select()与epoll()的区别**
-
-都用于**监视多个socket句柄**的状态，epoll相比select更加高效
-
-- select()：
-
-    1. 从进程空间向内核空间传入socket列表FD_SET，遍历FD_SET后将进程加入到各fd的等待队列中，selector进入阻塞状态
-
-        第一次遍历FD_SET，用于将进程加入到对于socket的等待队列中，涉及FD_SET到内核的内存拷贝
-
-    2. 某socket接收到数据，发出cpu中断信号，cpu执行中断程序进行数据搬运，并唤醒进程
-
-        - 数据搬运：数据从网卡缓冲区搬运到kernel socket buffer
-
-            > DMA：进行 I/O 设备和内存的数据传输的时候，数据搬运的工作交给 DMA 控制器，而 CPU 不再参与任何与数据搬运相关的事情
-
-            优化后步骤：某socket接收到数据后，**向DMA发送中断信号**，由DMA负责数据搬运而不占用CPU。DMA完成搬运后，再向CPU发起中断信号，`CPU执行中断程序后，再唤醒进程`
-
-        - 唤醒进程：将进程从所有socket fd的等待队列中移除
-
-        第二次遍历FD_SET，从而得知哪些socket等待队列上有该进程，所以该次遍历**同样需要**将FD_SET传递到内核
-
-    3. 进程只知道至少有一个socket接收了数据，需要遍历FD_SET获取就绪的fd，并根据可读/可写事件调用read()/write()
-
-        第三次遍历FD_SET，这次遍历在进程用户空间进行，主要是获知已就绪的fd
-
-        NIO：通过mmap() 直接打通了kernel socket buffer到用户空间，无需内存拷贝，具体实现是使用DirectByteBuffer（extends `MappedByteBuffer`）
-
-- epoll()：
-
-    1. 通过epoll()的函数对fd进行注册
-
-    - epoll_create()：创建epfd（eventpoll）
-    
-        - epfd：本身就是一个红黑树，用于存储注册在其上的句柄，从而**避免每次调用都需要传入fd集合产生拷贝**
-        
-        - epfd.rdlist：epfd包含一个双向链表实现的就绪队列，当有socket的数据就绪后，将由DMA、CPU配合执行中断程序将就绪fd加入到队列中，从而避免每次进程还需重新遍历fd集合获取就绪的fd
-    
-    - epoll_ctl()：添加需要监视的socket fd到epfd中，**内核会将eventpoll加入到这些socket的等待队列**
-
-    - epoll_wait()：进程进入epfd的等待队列中，进入阻塞状态
-
-        监视的socket fd基本不会变动，后续无需每次都进行注册，进一步减少了第一次遍历
-
-    2. socket接收到数据后，向DMA发起中断信号。DMA读取数据完毕后，向CPU发起中断信号执行中断程序，cpu将执行**设备驱动回调**，将就绪的文件描述符加入到epfd的rblist就绪队列中
-
-        epfd作为进程与socket的中介者，socket的等待队列将一直持有eventpoll引用，无需移出队列减少了select第二次遍历
-
-    3. 驱动将就绪socket fd加入rdlist，并唤醒在epfd等待队列上的进程
-
-        进程可直接在rdlist中获取到就绪fd，减少了select的第三次遍历
-
-总结：
-
-1. 句柄数增多导致的性能问题
-
-    - select()/poll()：需要对FD_SET进行三次线性遍历，在句柄数越多时表现越差，select最多监视1024个，poll使用链表结构可以监视更多句柄，但依旧没有改善效率低的问题
-
-    - epoll()：没有影响，因为是通过注册设备回调实现就绪列表rblist，只有活跃的socket才会主动调用，进程可以直接从就绪队列获取到就绪
-
-2. 消息传递方式
-
-    - select()：每次调用select()都会将FD_SET从用户空间中拷贝到内核空间
-
-    - epoll()：fd存放在内核eventpoll中，在**用户空间和内核空间的copy仅需一次**
-
-    > epoll没有使用mmap！
-
-3. 监视方式：都在阻塞状态中由中断信号唤醒，select()由socket直接唤醒，epoll()由socket间接通过eventpoll唤醒
-
-# **3附加. JDK的epoll空转bug**
-
-
-
-# **4. BIO、NIO、AIO**
+# **2. BIO、NIO、AIO**
 
 - BIO：同步阻塞I/O，进程在发起I/O请求后进入阻塞状态等待I/O完成
 
@@ -160,15 +46,29 @@
 
     网络结构：nodejs
 
-# **4附加：NIO的buffer是双向的吗？**
+> NIO为什么高效？
 
-是的，通过buffer进行数据的读入与写出，nio中需要调用filp()方法进行读/写模式的切换，而netty则通过维护读、写指针简化操作
+需根据场景分析，在低并发I/O下，NIO不一定就比BIO高效
 
-- nio：读写共用position指针
+1. 采用selector监控多个fd，替代bio的one connection per thread，后者在过多连接下将导致巨大的线程切换开销
 
-- netty：分为readerIndex读指针、writeIndex写指针
+2. 只有处于活动状态的io才会去占用线程，不会使得线程白白因为io而阻塞，提高**线程利用率**
 
-# **5. Reactor**
+3. 使用NIO提供的直接内存（mmap）时，省去将数据从kernel page cache与用户进程空间之间的拷贝开销
+
+4. 使用NIO.channel.transferTo()/transferFrom()，调用系统内核sendfile()函数，实现文件传输的零拷贝
+
+# **3. NIO的buffer是双向的吗？**
+
+是的，buffer支持数据的读入与写出，nio中需要调用filp()方法进行读/写模式的切换，而netty则通过维护读、写指针简化操作
+
+> bio：读使用in流，写使用out流
+
+- nio.ByteBuffer：读写共用position指针
+
+- netty.ByteBuf：分为readerIndex读指针、writeIndex写指针
+
+# **4. Reactor**
 
 Reactor模型分为：
 
@@ -198,7 +98,7 @@ Reactor模型分为：
 
 例子：netty的bossWorkGroup和workerWorkGroup
 
-# **6. netty的线程模型**
+# **5. netty的线程模型**
 
 线程模型：`多Reactor多线程`模型，每个reactor都有一个selector以注册句柄的感兴趣事件，通过主Reactor并按某种规则分发client fd到`从Reactor`中
 
@@ -226,11 +126,119 @@ Reactor模型分为：
 
 - 业务线程池：用于剥离`从Reactor`的非I/O操作（如：decode、compute、encode），专注于业务逻辑的处理
 
-# **7. 什么是粘包、半包，如何解决**
+# **6. 什么是黏包、半包，如何解决**
 
+发生位置：应用层
 
+原因：TCP基于字节流传输，应用层在读取数据时按**某个长度值**进行读取，读取的流数据中可能包含多个message（黏包），或者不完整的message（半包）
 
-# **8. MappedByteBuffer、DirectByteBuffer、malloc()**
+> NIO使用buffer进行读、写数据，长度值为TCP的`SO_RCVBUF`大小值
+
+解决方案：
+
+- 黏包：采用**拆包**方式（length | data的格式进行解码）
+
+    > netty使用`LengthFieldBasedFrameDecoder`读取长度信息
+
+- 半包：采用**累加缓存**方式，出现半包后对之前解析的数据进行缓存，并累加读取未读完的数据后进行**拼接**
+
+# **7. 大/小端**
+
+- 大、小端：指的是字节在内存**低到高地址**的排列顺序，又称为`字节序`
+
+    > 一般默认低到高地址的顺序为**从左到右**
+
+    - `大端`：高位字节放在低地址，低位字节放在高地址
+
+        以127（0x00 0x00 0x00 0x7f）为例：
+
+        | 0x0001 | 0x0002 | 0x0003 | 0x0004 |
+        | ---- | ---- | ---- | ---- |
+        | 0x00 | 0x00 | 0x00 | 0x7f |
+
+    - 小端：低位字节放在高地址，高位字节放在低地址
+
+        以127（0x00 0x00 0x00 0x7f）为例：
+
+        | 0x0001 | 0x0002 | 0x0003 | 0x0004 |
+        | ---- | ---- | ---- | ---- |
+        | 0x7f | 0x00 | 0x00 | 0x00 |
+
+    `网络字节序`：TCP/IP各层协议将字节序定义为Big-Endian，因此**大端字节序**也被称为网络字节序
+
+    ```java
+    // netty.CompositeByteBuf
+    public ByteOrder order() {
+        // 默认返回大端字节序（网络字节序）
+        return ByteOrder.BIG_ENDIAN;
+    }
+    ```
+
+# **8. netty发送数据（高/低水位）**
+
+`通信缓冲区`：
+
+- 单缓冲：任一时刻都只能实现单方向的数据传输，决不允许双方**同时向对方**发送数据
+
+- `双缓冲`（tcp）：实现**双工通信**，一个用作`发送缓冲区`（写缓冲区），一个用作`接收缓冲区`（读缓冲区）
+
+    netty设置每个client socket fd的发送缓冲区大小、接收缓冲区大小：
+
+    ```java
+    new ServerBootstrap()
+        .childOption(ChannelOption.SO_RCVBUF, 8 * 1024)  // 对应内核TCP的SO_RCVBUF参数
+        .childOption(ChannelOption.SO_SNDBUF, 8 * 1024); // 对应内核TCP的SO_SNDBUF参数
+    ```
+
+    - SO_SNDBUF：操作系统内核的**tcp发送缓冲区**，对应发送窗口大小
+    
+        所有应用需要发送到对端的消息，都会存放到该缓冲区中，等待发往对端
+
+    - SO_RCVBUF：操作系统内核的**tcp接收缓冲区**，对应接收窗口大小，接收缓冲区与TCP接收窗口大小对应关系：接收窗口大小 <= 接收缓冲区大小
+
+`ChannelOutboundBuffer`：netty等待写入内核通信缓冲区的**消息队列**，将要发送的数据以Entry形式进行缓存，各个Entry组成链表
+
+`水位`：ChannelOutboundBuffer本身是无界的，水位控制消息队列的链表节点数量处于水位范围内，以**限制程序的写操作，避免OOM**
+
+- 高水位：队列高过高水位时，channel的isWritable变成false，无法写入
+
+- 低水位：队列低于低水位时，channel的isWritable变成true，可以继续写入
+
+> 为了避免对端程序接收缓慢，导致netty的buffer队列无止境扩张导致进程OOM，在写数据时**应判断isWritable()**，如果是false就不要再写数据了
+
+```java
+public boolean sendMsg(final ByteBuf msg) {
+    int msgId = msg.getShort(4);
+    int bytes = msg.readableBytes();
+
+    if (channel == null) {
+        LOGGER.error("sendMsg {} channel isNull,size:{]", msg.getShort(4), msg.readableBytes());
+        ByteBufUtils.release(msg);
+        return false;
+    }
+
+    ChannelOutboundBuffer outboundBuffer = channel.unsafe().outboundBuffer();
+    // 使用channel.isWritable()做判断，高低水位保护channel消息队列的大小
+    if (!channel.isActive() || !channel.isWritable()) {
+        LOGGER.warn("sendMsg ip:{},session:{} isActive:{},isWritable:{}  size:{}", getAddress(), getSessionId(),
+                channel.isActive(), channel.isWritable(), msg.readableBytes());
+        ByteBufUtils.release(msg);
+        return false;
+    }
+
+    channel.writeAndFlush(msg).addListener(new GenericFutureListener() {
+        public void operationComplete(Future future) throws Exception {
+            if (!future.isSuccess()) {
+                LOGGER.warn("sendMsg {} channel 发送失败,size:{}, error:{}", msgId, bytes, future.cause());
+                printOutBufInfo();
+            }
+        }
+    });
+    return true;
+}
+```
+
+# **9. MappedByteBuffer、DirectByteBuffer与malloc()/mmap()的关系**
 
 JDK.NIO高性能：
 
@@ -244,13 +252,13 @@ JDK.NIO高性能：
 
 - DirectByteBuffer：堆外直接内存，继承于MappedByteBuffer，由ByteUtils.allocate()或Channel.map()方法获得
 
-    - ByteUtils.allocate()：调用Unsafe.allocateMemory0 => os:malloc申请内存
+    - ByteUtils.allocate()：调用Unsafe.allocateMemory0 => `os:malloc()`申请内存
 
     - Channel.map()：调用FileChannel.map() => kernel.mmap64得到虚拟内存地址
 
     > linux下申请内存就是通过`brk()`和`mmap()`两个系统调用，除了这两个之外的内存管理函数（如malloc()），都是上层运行库封装出来的，底层都要走到这两个函数调用上
 
-# **9. Netty的零拷贝实现**
+# **10. Netty的零拷贝实现**
 
 读取磁盘数据，然后发送数据：
 
@@ -268,6 +276,8 @@ JDK.NIO高性能：
     - 优化思路：减少到用户空间的拷贝开销
 
 - 在无须修改数据的情况下，使用`sendfile() + SG-DMA`
+
+    > FileChannel.transferTo()
 
     - 上下文切换：2次，sendfile()合并了read和write
 
@@ -310,8 +320,6 @@ JDK.NIO高性能：
 
 结论：传输大文件时，使用异步I/O+直接I/O；传输小文件时，使用零拷贝技术
 
-# **10. 大/小端，高/低水位**
-
 # **11. tomcat的线程模型**
 
 # **12. Actor模型思想**
@@ -319,8 +327,11 @@ JDK.NIO高性能：
 # 参考
 
 - [网络篇夺命连环12问](https://mp.weixin.qq.com/s?__biz=MzkzNTEwOTAxMA==&mid=2247488227&idx=1&sn=36587eab67d87824179dd5edda3533db&chksm=c2b25a1ef5c5d308ae02ba5a2e5922738fd43305faf74c41320272acecc77d6a155eb50ad33a&token=982147105&lang=zh_CN&scene=21#wechat_redirect)
+- [netty高低水位流控（yet）](https://www.cnblogs.com/silyvin/p/12145700.html)
+- [详解大端模式和小端模式](https://www.cnblogs.com/little-white/p/3236548.html)
 
 # 重点参考
 - [从底层介绍epoll（相当全面）](https://www.toutiao.com/i6683264188661367309/)
 - [Netty系列文章之Netty线程模型](https://juejin.cn/post/6844903974298976270)
 - [小林coding-8张图搞懂「零拷贝」](https://zhuanlan.zhihu.com/p/258513662)
+- [Netty——发送消息流程&高低水位](https://www.cnblogs.com/caoweixiong/p/14676840.html)
