@@ -55,6 +55,7 @@ import java.util.Map;
  */
 
 // @lc code=start
+// 滑动窗口思想：right一直往右挪动至底部，然后触发left的更新，以减少每一个迭代的容量
 class Solution {
     public int lengthOfLongestSubstring(String s) {
         // 1. HashSet
