@@ -56,20 +56,28 @@
 // @lc code=start
 class Solution {
     /**
-     * 1. dp[i]定义：前i个连续数中，连续子数组的最大值
+     * 1. dp[i]定义：前i个连续数中，连续子数组的最大值，直接用一个pre变量就行了
      * 2. 元素关系：dp[i] = Math.max(dp[i - 1] + nums[i], nums[i])
-     * 3. 
+     * 3. 初始值：无需
      * @param nums
      * @return
      */
     public int maxSubArray(int[] nums) {
-        int m = nums.length;
-        int[] dp = new int[m];
-        dp[0] = nums[0];
-        int max = nums[0];
-        for (int i = 1; i < m; i++) {
-            dp[i] = Math.max(dp[i - 1] + nums[i], nums[i]);
-            max = Math.max(dp[i], max);
+        // int[] dp = new int[nums.length];
+        // dp[0] = nums[0];
+        // int max = nums[0];
+        // for (int i = 1; i < m; i++) {
+        //     dp[i] = Math.max(dp[i - 1] + nums[i], nums[i]);
+        //     max = Math.max(max, dp[i]);
+        // }
+        // return max;
+
+        // ==========>
+
+        int max = nums[0], pre = 0;
+        for (int num : nums) {
+            pre = Math.max(pre + num, num);
+            max = Math.max(pre, max);
         }
         return max;
     }
