@@ -49,12 +49,12 @@ NioEndPoint组合了独立的Poller与Acceptor两个异步线程，Poller先启�
 
 > startInternal()方法的调用与Boostrap、ProtocolHandler、AbstractProtocol相关
 
-Poller对selector阻塞返回的key集合进行遍历处理，通过`createSocketProcesor()`方法，每一个就绪的socket都会被包装为一个SocketProcessor，SocketProcessor将会进行**阻塞I/O操作**和**阻塞serlvet业务处理**
+Poller对selector阻塞返回就绪key集合遍历处理，通过`createSocketProcesor()`方法，为每一个就绪socket**包装成SocketProcessor**，SocketProcessor将会进行**阻塞I/O操作**和**阻塞serlvet业务处理**
 
 ```java
 public class NioEndPoint extends AbstractJsseEndPoint<NioChannel, SocketChannel> {
     // jdk.nio的ServerSocketChannel，对应server listen socket fd
-    private volatile ServerSocketChannel serverSock = null;
+    private volatile ServerSocketChannel serverSocket = null;
 
     private Poller poller = null;
 
@@ -199,16 +199,16 @@ public class Acceptor<U> implements Runnable {
                     } catch (Throwable t) {
                         // ...
                     }
+                }
             }
-
-            } catch (Throwable t) {
-                // ...
-            } finally {
-                // 与stop方法配套使用，只有run这边执行完毕后，acceptor的stop逻辑才能真正开始运作
-                stopLatch.countDown();
-            }
-            state = AcceptorState.ENDED;
+        } catch (Throwable t) {
+            // ...
+        } finally {
+            // 与stop方法配套使用，只有run这边执行完毕后，acceptor的stop逻辑才能真正开始运作
+            stopLatch.countDown();
         }
+        
+        state = AcceptorState.ENDED;
     }
 
     public void stop() {
