@@ -104,7 +104,18 @@ public class Solution {
      * @return
      */
     public boolean hasCycle(ListNode head) {
-        
+        if (head == null) {
+            return false;
+        }
+        ListNode fast = head.next, slow = head;
+        while (fast != slow) {
+            if (fast == null || fast.next == null) {
+                return false;
+            }
+            fast = fast.next.next;
+            slow = slow.next;
+        }
+        return true;
     }
 }
 // @lc code=end
