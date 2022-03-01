@@ -371,7 +371,7 @@ public abstract class ContainerBase extends LifecycleBeanBase implements Contain
     }
     ```
 
-3. StandardHostValue：StandardHostValue从传入的request取出Context，context.getPipeline().getFirst().invoke() --> StandardContextValue.invoke()
+3. StandardHostValue：StandardHostValue从传入的request取出Context，context.getPipeline().getFirst().invoke() --> StandardContextValue.invoke()  
 
     AccessLogValue、ErrorReportValue相继处理，最后再调用StandardHostValue的invoke方法
 

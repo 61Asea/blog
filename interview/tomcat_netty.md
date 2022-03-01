@@ -322,6 +322,88 @@ JDK.NIO高性能：
 
 # **11. tomcat的线程模型**
 
+在linux上采用epoll多路复用，线程模型采用`多Reactor多线程`模型
+
+- Acceptor：主Reactor，负责端口监听与调用`ServerSocketChannel.accept()`建立新连接
+
+    - accept()：从全连接队列中取出tcp三次握手**完毕**的socket fd
+
+    - OP_REGISTER：将新连接包装为队列任务，加入到Poller的阻塞队列中
+
+- Poller：从Reactor，负责client socket的**读监听**（读取数据），但不负责数据的read
+    
+    - synchronizedQueue：用于接收主Reactor加入的任务，当有任务加入队列时，**会唤醒Poller的selector**
+
+    - wakeupCounter：并发程度计数器，当计数器大于>0时，selector将调用`selectNow()`及时返回
+
+    - selector：用于监听client socket的读就绪事件，同时配合socketProcessor对http请求行和请求头的**非阻塞读**
+    
+        当客户端发送数据后，selector阻塞返回并通过I/O线程池进行处理
+
+- Tomcat I/O线程池（对应SokcetProcessor）:处理read、decode、compute、encode、write全过程
+
+    - SocketProcessor：线程会通过ConnectionHandler获得**绑定的socket**进行轮询操作
+
+    - 读取http首部（请求行、请求头）采用busy waiting进行**非阻塞读**，这意味着不阻塞I/O线程
+
+        如果出现读不完数据，则由Poller线程继续监测下次数据的到来
+
+    - 读取http主体（数据）采用`BlockPoller + CountDownLatch`进行阻塞读
+
+        请求体数据未读完毕且不可读，则注册封装OP_READ事件到BlockPoller的阻塞队列中，并利用`NioSocketWrapper`中的readLatch**阻塞**I/O线程
+
+- BlockPoller：实现SocketProcessor对请求体数据的阻塞读取
+
+    - synchronizedQueue
+
+    - selector
+
+# **12. Servlet**
+
+> servlet线程安全吗？
+
+Servlet在单实例模式下是`线程不安全`的，不同的SocketProcessor通过Context的分发，最终都会调向同一个servlet（StandardWrapper）
+
+多例模式的Servlet已被废弃，会造成大量的servlet对象频繁创建和回收，效率差
+
+> servlet生命周期？
+
+共三个阶段：初始化、service调用、销毁
+
+流程：在请求对应的servlet时初始化，然后以单例形式常驻内存中，并在最终服务器关闭时销毁
+
+> struct2和spring mvc是如何实现的？
+
+前者通过**filter**实现，后者通过新增一个servlet来实现，即struct2在更上个层级实现
+
+```java
+public class StandardWrapperValue {
+    @Override
+    public final void invoke(Request request, Response response) {
+        // ...
+
+        // 创建过滤器链
+        ApplicationFilterChain filterChain =
+                ApplicationFilterFactory.createFilterChain(request, wrapper, servlet);
+        // ...
+
+        // 调用过滤器链，最终会传递调用servlet对应的wrapper
+        filterChain.doFilter(request.getRequest(),
+                                response.getResponse());
+    }
+}
+```
+
+> filter生命周期？
+
+共三个阶段：
+
+- init：在WrapperValue构造该filter链时，进行初始化
+
+- doFilter：请求处理过程调用
+
+- destroy：**请求处理结束**，删除请求链时进行销毁
+
 # **12. Actor模型思想**
 
 # 参考
@@ -335,3 +417,5 @@ JDK.NIO高性能：
 - [Netty系列文章之Netty线程模型](https://juejin.cn/post/6844903974298976270)
 - [小林coding-8张图搞懂「零拷贝」](https://zhuanlan.zhihu.com/p/258513662)
 - [Netty——发送消息流程&高低水位](https://www.cnblogs.com/caoweixiong/p/14676840.html)
+
+- [Tomcat NIO(5)-整体架构](https://mp.weixin.qq.com/s?__biz=MzI0MDE3MjAzMg==&mid=2648393624&idx=1&sn=ddb2852d26daa1a16a74e183a0d4ac08&chksm=f1310af7c64683e183431a43ab5e4528a1d53d2ba4d7f591d8b5da1a401f3737a378476cc1c8&scene=178&cur_album_id=2123520319532400647#rd)：Acceptor、Poller、I/O线程池、BlockPoller
