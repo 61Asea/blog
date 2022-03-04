@@ -118,19 +118,149 @@
 
 # **master选举**
 
+涉及三个关键参数：epoch纪元、serverid、zxid
+
+分为两种情况：
+
+- 启动时的master选举：发起投票、收到投票、`处理投票`、`统计投票`、状态变更
+
+    初始状态：LOOKING，zk单机不会进入选举状态，两台及以上会进入
+
+    - 发起投票：每个Server发出初始投票，该投票都会**选择自己作为leader**服务器，投票内容包含`（myid，zxid）`
+    
+    - 收到投票：收到其他结点的投票信息，检查是否是本轮选举`epoch`，是否来源于follower服务器
+
+    - 处理投票：判断收到的投票的（myid，zxid）二元组的大小，选出其中最大的二元组，变更投票信息并**再次发出**
+
+        存在自身发起投票，和处理投票后的再次发出，所以共有两次投票
+
+    - 统计投票：每次投票后，zk统计投票信息，当发现有**过半**机器接收到相同的投票信息，则认为已选出leader
+
+    - 状态变更：若最终投票信息是自身服务，则从LOOKING -> LEADER，否则从LOOKING -> FOLLOWER
+
+- 运行过程中的master选举：`状态变更`、发起投票、收到投票、处理投票、统计投票
+
+    相比启动过程，多了一开始的状态变更，通常出现在leader崩溃退出等异常情况，follower将从FOLLOWER -> LOOKING
+
 # **数据同步**
 
-proposal
+> CP：常说的不可用指的是数据同步期间
 
-minCommittedLog
+leader在收到请求时，会按照收到的顺序为每个proposal分配ZXID，并加入到FIFO队列中
 
-maxCommittedLog
+涉及`3种值`：
+
+- lastSyncZxid/peerLastZxid：Observer和Follower中最新的ZXID
+
+- minCommittedLog/minZxid：leader的提议队列中的zxid最大值
+
+- maxCommittedLog/maxZxid：leader的提议队列中的zxid最小值
+
+围绕这3个值，共有`4种数据同步方式`：
+
+- 差异化同步：
+
+    - 值：minCommitedLog< lastSyncZxid < maxCommittedLog，且**都处于同一纪元**
+
+    - 场景：旧leader崩溃，新leader选举完成之后
+
+    - 做法：
+
+        1. leader向follower发出`DIFF`命令，代表开始差异化同步，发送**lastSyncZxid到maxCommittedLog之间**的proposal给follower，再发送`NEWLEADER`命令给follower
+
+        2. follower接收到DIFF、提议和NEWLEADER命令后进行同步，同步完成后发送ACK响应
+
+        3. leader收到**半数以上的learner**的ack后，认为同步完成（集群可用），发送`UPTODATE`命令给learner
+
+        4. learner收到UPTODATE命令后，响应ack，并开始提供服务（当前follower可用）
+
+- 回滚同步
+
+    - 值：lastSyncZxid > maxCommittedLog，且**不处于同个纪元**
+
+    - 场景：旧leader崩溃恢复（**已生成proposal，但未发出写入命令**），重新加入集群，且当前集群没有新的proposal产生
+
+    - 做法：
+    
+    leader发送`TRUNC`命令，旧leader接收后直接回滚到当前纪元的maxCommitedLog，提议丢失
+
+- 回滚同步 + 差异化同步
+
+    - 值：minCommitedLog < lastSyncZxid < maxCommitedLog，后两者**不处于同一纪元**
+
+    - 场景：旧leader崩溃恢复，重新加入集群，且当前集群已经产生新纪元下的新提议
+
+    - 做法：
+    
+        1. leader发送`TRUNC命令`，旧leader接收后回滚到新leader旧纪元下的最大Zxid提议状态
+
+        2. leader发送`SYNC命令`，旧leader接收后，按照差异化同步进行
+
+- 全量同步
+
+    - 值：
+    
+        - 新leader不存在提议队列的缓存，并且被同步者的lastSyncZxid != leader的最大Zxid
+
+        - lastSyncZxid < leader的minCommitedLog
+
+    - 场景：
+
+        - 第一种值情况
+
+        - 第二种情况，相当于崩溃后的zk结点过久没有恢复，导致差异数据较大
+
+    - 做法：
+
+        - leader向follower和observer发送`SNAP`命令，进行数据全量同步
 
 # **数据不一致场景**
 
+- `查询不一致`：过半写成功则代表集群写入成功，但可能有的结点还未同步完毕，这种情况下zk保证在一段时间后能进入到最终一致
+
+- `leader未发送proposal宕机`：**事务日志丢失**，即使崩溃恢复重新加入集群，也会进行回滚
+
+- leader发送proposal，但发送commit时宕机：commit意味着一定有结点写入成功，所以在后续ZAB崩溃恢复中，仍旧能选出Zxid最大的机器作为新leader，*事务日志不会丢失**
+
 # **znode数据结构**
 
-# **watcher**
+四种结点：
+
+- 持久结点：`create /hello/x`，一旦被创建，除非被主动移出，否则将一直存在zk中
+
+- 临时结点：`create -e /hello/x`，生命周期与客户端session一致，当**客户端断开连接后**，zk会自动删除临时结点
+
+- 顺序结点：`create -s /hello/x`，会在结点名称后从小到大顺序，自动添加数字（10位大小）
+
+- 临时顺序结点：`create -s -e /hello/x`，同时具备临时结点和顺序结点的特性，天然适合实现公平模式的zk分布式锁
+
+存储内容：
+
+- acl：节点访问权限，如IP
+
+- data：节点具体的业务数据
+
+- child：节点的子节点
+
+- stat：节点状态信息，包括事务ID，纪元
+
+> curator提供递归删除节点和递归创建节点功能
+
+# **Watcher机制**
+
+指客户端在指定节点上注册watcher，并将其加入到本地的watcherManager中，当节点发生变动时，服务器通知客户端节点发生变动（`推`），客户端对节点进行拉取获取最新数据（`拉`），这种模式称为`推拉结合`
+
+Watcher的4个特征：
+
+- 一次性：watcher在通知后会失效，需要重新设置为true
+
+- 轻量级：zk服务的通知是以watchEvent为单位的，不提供具体的节点信息，需要由zk client自行拉取，这种模式也称为推拉结合
+
+- 串行执行：在client收到通知后，将从WatcherManager中取出回调逻辑，客户端对逻辑串行执行
+
+    > 需要注意，执行逻辑不要阻塞过长时间，否则会导致一个wacher对整个客户端阻塞过久
+
+- 异步通知：zk server发送watcher通知到zk client的过程是异步的，不能保证节点的每个更新都监控完整，只能保证**最终一致**
 
 # **zk实现分布式锁**
 
