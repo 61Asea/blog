@@ -262,9 +262,60 @@ Watcher的4个特征：
 
 - 异步通知：zk server发送watcher通知到zk client的过程是异步的，不能保证节点的每个更新都监控完整，只能保证**最终一致**
 
-# **zk实现分布式锁**
+# **zk实现分布式锁、信号量、闭锁**
 
-# **如何理解CAP**
+参考`org.apache.curator`实现：
+
+- 公平锁（默认实现）：依托**临时顺序节点**实现，具备可重入性与互斥性
+- 读写锁
+- 联锁
+- 信号量/闭锁
+
+1. 公平锁
+
+    思路：锁key作为**持久类型的父节点**进行展开，zk集群根据调用创建接口的顺序分配序列号，在父节点下为对应客户端创建**临时顺序节点**，并将序列号拼接到子节点名称之后
+
+    - 互斥获取：父节点的所有子节点集合，按照`节点名称`（对比序列号）进行排序，并获取上一步返回的节点名称在有序集合中的index
+
+        - 若节点index < maxleases（默认maxleases = 1，即集合首位），则说明当前线程已获取到锁
+
+        - 若节点index >= maxleases，则获取`index - maxleases`（前一个）位置的节点，对其添加Watcher，以监视节点移除，再进入**阻塞状态**
+
+        > 最终形成了一个类似JDK.AQS的同步队列，队列中的每个节点，都会等待上一个节点状态的变更
+
+    - 释放：删除对应的zk节点，触发下一个节点的Watcher返回，以对阻塞的节点进行唤醒
+
+2. 读写锁
+
+    思路：依托公平锁的实现，读、写操作的节点名称会附加不同的标识（序列号的递增与操作类型无关）
+
+    - 重入线程，读写不互斥
+
+    - 读读不互斥：遍历所有子节点，获取`最小写锁子节点的索引`
+
+        - 子节点包含写锁节点索引，判断操作线程节点与最小写索引的大小，若ourIndex < firstWriteIndex，则获取读锁
+
+        - 子节点不包含写锁节点索引，直接获取到读锁
+
+    - 读写互斥：ourIndex > firstWriteIndex，则对前一个节点添加Watcher，并进入阻塞状态等待
+
+3. 联锁：在超时时间内，对多个锁进行统一获取，要么全部成功，要么全部失败
+
+    - 超时时间：
+        
+        - redis：默认1500ms * 子锁个数
+
+        - zk：默认阻塞直至获取成功
+
+    - 全部成功：采用阻塞获取方式获取锁，只有在获取到全部锁之后才能执行业务
+
+    - 全部失败：一般出现在超时情况下，**对已成功的锁进行解锁操作**，若超时则释放全部锁
+
+4. 信号量/闭锁
+
+    redisson：将计数维护在redis中，结合Publish/Subscribe实现
+
+    zk：维护
 
 # 参考
 - [Zookeeper夺命连环9问](https://mp.weixin.qq.com/s?__biz=MzkzNTEwOTAxMA==&mid=2247488995&idx=1&sn=990d099cd9724931da9a414da549d093&chksm=c2b25d1ef5c5d40821fe69e42fadb96312c02654ffb921cddc9801c8ab3c4f4d3e5cae2b0b9c&token=982147105&lang=zh_CN&scene=21#wechat_redirect)
@@ -272,3 +323,7 @@ Watcher的4个特征：
 - [主流微服务注册中心浅析和对比](https://my.oschina.net/yunqi/blog/3040280)
 
 - [12道Zookeeper](https://zhuanlan.zhihu.com/p/418125310)
+
+- [ZooKeeper 分布式锁 Curator 源码 01：可重入锁](https://zhuanlan.zhihu.com/p/390210597)
+- [ZooKeeper 分布式锁 Curator 源码 02：可重入锁重复加锁和锁释放](https://zhuanlan.zhihu.com/p/391823831)
+- [ZooKeeper 分布式锁 Curator 源码 03：可重入锁并发加锁](https://zhuanlan.zhihu.com/p/392245217)

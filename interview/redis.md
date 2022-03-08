@@ -289,8 +289,17 @@ redis快：单线程处理操作，纯内存，epoll 单线程reactor，6.0版�
 
  - [Redis分布式锁](https://mp.weixin.qq.com/s?__biz=MzkzNTEwOTAxMA==&mid=2247491561&idx=1&sn=0a2a2728ab6e3fac2211504dcac73963&chksm=c2b25714f5c5de0239d7796ffedbfc2136cd8f7b64e8bd26a79019013314f4e1406ac4b0a8ec&token=982147105&lang=zh_CN&scene=21#wechat_redirect)
 
+ - [Redisson 分布式锁源码 08：MultiLock 加锁与锁释放](https://zhuanlan.zhihu.com/p/388357443)
+ - [Redisson 分布式锁源码 10：读写锁](https://zhuanlan.zhihu.com/p/389165753)
+ - [Redisson 分布式锁源码 11：Semaphore 和 CountDownLatch](https://zhuanlan.zhihu.com/p/389976053)
+
  # 重点参考
 
  - [红黑树、AVL、跳表选择](https://www.cnblogs.com/charlesblc/p/5987812.html)
 
  - [为什么是先更新数据库再删除缓存，而不是更新缓存？](https://blog.csdn.net/dreamzuora/article/details/107673150)
+
+
+- [Redisson 分布式锁源码 02：看门狗](https://zhuanlan.zhihu.com/p/386328633)
+- [Redisson 分布式锁源码 03：可重入锁互斥](https://zhuanlan.zhihu.com/p/386651081)
+- [Redisson 分布式锁源码 06：公平锁排队加锁](https://zhuanlan.zhihu.com/p/387700327)
