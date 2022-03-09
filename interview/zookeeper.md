@@ -317,6 +317,16 @@ Watcher的4个特征：
 
     zk：维护
 
+# **zk的cp指的是什么？**
+
+zk的cp指的是其过半提供服务机制，防止网络分区下，产生脑裂而影响数据的一致性
+
+同机房不可用：当出现网络分区时，小于半数机器数分区的zk集群将因为过半机制关闭服务提供，即使是同个分区机房下的service也无法使用
+
+影响：在zk作为注册中心的场景下，数据的不一致仅仅会导致负载的短暂不均衡，无需cp
+
+- [ZooKeeper 并不适合做注册中心 - 安能的文章 - 知乎](https://zhuanlan.zhihu.com/p/98591694)
+
 # 参考
 - [Zookeeper夺命连环9问](https://mp.weixin.qq.com/s?__biz=MzkzNTEwOTAxMA==&mid=2247488995&idx=1&sn=990d099cd9724931da9a414da549d093&chksm=c2b25d1ef5c5d40821fe69e42fadb96312c02654ffb921cddc9801c8ab3c4f4d3e5cae2b0b9c&token=982147105&lang=zh_CN&scene=21#wechat_redirect)
 

@@ -155,6 +155,8 @@ class Solution {
         //     return list2;
         // }
 
+        // **************************************************
+
         if (list1 == null || list2 == null) {
             return list1 == null ? list2 : list1;
         }
