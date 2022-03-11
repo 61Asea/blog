@@ -32,6 +32,8 @@
 
         - consumer group：消费者组，用于实现不同的消息队列模型，一个消费者组中的消费者只会去消费一个分区的消息
 
+        - consumer group leader：消费者组群主，执行消费者分区分配策略，通过cooridinator将结果分发给其他consumer
+
         - controller：在zk上抢注/controller节点成功的broker，用于负责分区leader选举、主题管理等工作
 
         - cooridinator：协调者，用于处理消费者组的重平衡，协调同一组内的消费分区分配
@@ -42,25 +44,93 @@
 
     - 快：消息顺序I/O追加写入、页缓存、零拷贝、消息精简、消息批量发送
 
-    - 分区有序性：Sequenece Number + PID
+    - 分区有序性：
+
+        - 机制：Sequenece Number（消息序列号） + PID（producer id），broker维护pid、主题分区、序列号三元组，以应对不稳定的网络情况可能导致的乱序情况
+
+            当发现producer发送的pid + sequence number与当前维护的三元组相差值大于1时，说明有乱序情况出现，会拒绝该消息写入
+
+        - 应用：record指定key后（如订单系统的订单id），根据hash取模，相同key的消息总是能落在同一个分区上
+
+    > 为什么不是多分区有序性？
+
+    单分区有序性可以保证不同partition之间互不干扰
+
+    如果要保证全分区有序，则需要在多个broker之间引入消息写入、消费的同步机制以保持顺序，当出现某消息消费过久（堵住），会造成其他分区无法写入/读取，整个kafka集群退化为单一队列
 
     - 主读主写：可以分担写压力，得益于kafka对主题分区的概念引入，通过多个维度对消息进行切分，将读写压力更均衡得分配到各个broker上，实现更合理的reload
 
 # 2. 消息队列模型
 
-- 点到点模型
+- 点到点模型：指消息只能被一个消费者消费，消费后消息删除
 
-- 发布订阅模型
+- 发布订阅模型：相当于广播模式，平行的消费者组上的消费者都可以消费掉消息
+
+机制：通过consumer group同时支持这两个模式，配置**所有的consumer都属于同一个consumer group**则属于点对点模型，如果**每个consumer group都只有一个consumer**则属于发布/订阅模型
 
 # 3. Kafka的通信过程
 
+1. broker
+
+- /controller节点的抢注，第一个抢占到节点的broker为kafka controller，用于协调各个分区leader replica和follower replica的崩溃恢复与热备
+
+- /broker/ids信息的注册，每个broker在启动后都会将自己的元信息写入，其他broker节点可根据zk的watcher机制感知到新broker的加入与退出
+
+2. producer
+
+- producer与配置的broker建立tcp连接，获取到所有broker的地址信息后，与所有broker建立tcp连接
+
+- 发送消息过程，如果指定key则按照hash取模将消息发送到固定分区中，如果没有指定key则按照轮询、随机等两种机制进行发送
+
+3. consumer
+
+- consumer与配置的broker进行tcp连接，得到协调者信息后向其发送`JOINGROUP`指令，第一个发送的consumer将成为群主
+
+    后续消费者组中的每个消费者在加入组时，都会发送JOINGROUP获取信息
+
+- 成为群主的consumer执行分区分配策略，并通过`SYNCGROUP`命令将分配结果发送给协调者
+
+    后续其他consumer也会根据SYNCGROUP获取到分区分配方案
+
+- 根据主题分区进行消息消费
+
 # 4. 为什么需要分区
+
+kafka的分区可以更加均衡的分摊读/写压力到不同的broker上，降低单点压力，即可并提供横向扩展能力（在增加broker之后进行consumer的重平衡即可）
 
 # 5. producer发送信息如何选择分区
 
+producer在没有指定key的情况下，消息根据以下两种方式：
+
+1. 轮询：维护全局的原子递增序列号，将消息均匀轮询发送到broker中
+
+2. 随机：随机发送到broker中
+
+在有指定key的情况下，则根据key的hash取模情况，发送消息到某个分区上，这也意味着相同的key信息都会落到同一个分区上，则相同key消息具备有序性（分区有序性）
+
 # 6. consumer的分区分配策略
 
+由conusmer group群主执行，具体有三种策略：
+
+1. range：根据每个主题的分区进行均匀分配，当主题间的分区数量不一致时会出现分配不均匀情况
+
+2. roundRobin：根据主题的所有嗯去进行均匀分配，当consumer订阅的主题不一致时会出现分配不均匀的情况
+
+3. sticky：黏滞策略，根据主题的所有分区，并结合全局consumer对主题的订阅情况进行均匀分配，避免roundrobin造成的不均匀情况，并保证上一次分配对应的consumer，在新的分配下仍旧保持对应关系
+
 # 7. consumer的重平衡
+
+指有`新的consumer`加入到消费者组，或有`新的主题`，或`分区数量`发生变动，则需要重新对消费者与分区关系进行重新分配的机制
+
+所以，重平衡是对consumer、主题、主题分区的分配的均衡机制
+
+过程如下：
+
+1. 新的consumer加入后向配置的broker建立tcp连接，获得协调者broker的信息并进行连接
+
+2. 向协调者发送`JOINGROUP`请求加入到消费者组中，第一个发送该请求的consumer成为群主，协调者会把组成员发送给群主
+
+3. 群主执行分区分配策略，并将结果发送通过`SYNCGROUP`发送给协调者，后续的消费者发送`SYNCGROUP`到协调者后，协调者会响应分区结果
 
 # 8. 如何保证消息可靠性
 
