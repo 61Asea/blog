@@ -120,24 +120,94 @@ producer在没有指定key的情况下，消息根据以下两种方式：
 
 # 7. consumer的重平衡
 
-指有`新的consumer`加入到消费者组，或有`新的主题`，或`分区数量`发生变动，则需要重新对消费者与分区关系进行重新分配的机制
-
-所以，重平衡是对consumer、主题、主题分区的分配的均衡机制
-
-过程如下：
-
-1. 新的consumer加入后向配置的broker建立tcp连接，获得协调者broker的信息并进行连接
-
+指有`新的consumer`加入到消费者组，或有`新的主题`，或`分区数量`发生变动，则需要重新对消费者与分区关系进行重新分配的机制3t
 2. 向协调者发送`JOINGROUP`请求加入到消费者组中，第一个发送该请求的consumer成为群主，协调者会把组成员发送给群主
 
 3. 群主执行分区分配策略，并将结果发送通过`SYNCGROUP`发送给协调者，后续的消费者发送`SYNCGROUP`到协调者后，协调者会响应分区结果
 
-# 8. 如何保证消息可靠性
+# 8. 如何保证消息可靠性（可靠消息最终一致性）
+
+消息从产生到消费，经历三个部分，需要保证producer、broker、consumer上的可靠性才能保证消息的可靠性
+
+> 消息可靠：消息不能丢失，所以重试机制必然产生消息重复，保证幂等性变得至关重要
+
+1. producer：消息在buffer有`易失性`（批量发送机制）、存在**超时异常**（网络时延或丢失）的情况
+
+- 网络因素：当broker没有对producer的消息发送进行响应（发送过程丢失、响应过程丢失），或发送消息出现**超时异常**
+
+    超时异常：无法确定消息是否真正发送到broker，因为存在producer投递消息失败或broker响应丢失，前者未写入，后者写入
+    
+    解决方案：
+
+    1. **重试消息发送**
+
+        参数：`retries = N`，设置一个较大值，在发送消息失败后不断重试
+
+        消息重复：每个消息分配一个全局唯一的Producer Id + Sequence Number序号，broker可以根据消息的PID进行判断，防止消息重复写入（**幂等性**）和**有序性**
+
+    2. broker的ISR列表响应个数
+
+        参数：`acks = 0、1、-1/all`，表示无需、需要一个（leader）、需要全部ISR副本的broker写入并返回ack给producer，才算真正完成
+
+        > 该机制需要搭配broker的`min.insync.replicas`，防止当ISR列表只有一个副本时，acks = -1达不到预期效果
+
+- 易失性：存在buffer中的消息，在producer宕机后将消失
+
+    解决方案：
+    
+    1. 自实现本地消息表，保留可靠消息的凭证（耦合性较强）
+
+    2. 考虑使用RocketMQ，其通过**Half消息**和**回查事务**实现分布式事务，将本地消息表集成到MQ服务中
+
+2. broker：写入到pageCache的消息具有`易失性`，当出现follower replica未同步成功时，leader replica所在broker宕机，则消息丢失
+
+    解决方案：
+
+    - 调整`fsync`频率，由于pagecache是异步写入到磁盘，只有在磁盘的数据才被持久化（不推荐，性能较低）
+
+    - `min.insync.replica`搭配producer的`acks`参数，确保有一个以上的follower同步后才算真正写入
+
+        `min.insync.replica`确保broker的ISR最低数量，否则当ISR = 1（只有leader本身），则producer的acks参数将失效
+
+3. consumer：使用手动提交(`enable.auto.commit = false`)和重读取偏移量策略（`auto.offset.reset=earliest`），并保证幂等性
+
+    自动提交可能导致消费失败但仍旧消息位移被异步提交，导致消息丢失
+
+    而重读取策略也是为了保证在位移量异常（zk异常）的情况下不丢失任何消息，但会导致消息重复消费
 
 # 9. broker的副本机制和同步原理
+
+leader主读主写，follower只做热备冗余容灾
+
+Kafka中将一个分区的所有副本集合称为`AR`，完成数据同步的所有副本集合称为`ISR`，ISR是一个动态集合，由replica.lag.time.max.ms参数配置最大同步延迟时间
+
+通过`HW`和`LEO`来实现主从之间的数据同步，前者表示当前集群的已同步信息，后者表示leader已接收到的信息个数
 
 # 10. kafka时间轮
 
 # 11. kafka抛弃zk原因
 
+1. **重度依赖**：kafka作为一个分布式系统，重度依赖另一个分布式协调系统，增加运维成本
+
+2. **性能问题**：zk不适合高频写入操作，若出现kafka高并发提交位移操作则会导致效率低下
+
+    > 后来版本的kafka，将消息提交和位移保存也通过消息的方式进行处理，主题为`__consumer_offsets`
+
+3. 严重依赖zk进行元数据管理和broker间的协调工作，如果集群规模过大，会导致zk元数据过多，进而导致zk watcher的延时
+
 # 12. kafka快的原因
+
+1. 通过文件追加的方式顺序I/O写入
+
+2. 消息写入到pageCache中，再由os的`fsync`策略进行异步落盘
+
+3. sendfile + SG-DMA，实现消息零拷贝发送
+
+4. mmap() + write（），减少一次从kernel socket buffer拷贝到用户空间的开销，后续写入拷贝到kernel page cache（cpu），再由`fsync`策略落盘（DMA）
+
+5. producer批量发送
+
+# 参考
+
+- [消息队列解决方案（本地消息表）](https://blog.csdn.net/as4566/article/details/109107766)
+- [可靠消息最终一致性](https://www.cnblogs.com/zhengzhaoxiang/p/13976517.html)
