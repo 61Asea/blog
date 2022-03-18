@@ -64,7 +64,7 @@ public class CLH {
 }
 ```
 
-相比CLH自旋锁busy-waiting，AQS为sleep-waiting，所以AQS的队列节点由前驱节点唤醒，而不像自旋锁队列的后驱节点自旋判断
+相比CLH自旋锁busy-waiting，AQS为`sleep-waiting`，所以AQS的队列节点由前驱节点唤醒，而不像自旋锁队列的后驱节点自旋判断
 
 抽象出**同步器的state（volatile）**，根据定义进入CLH队列的规则：
 
@@ -145,7 +145,7 @@ public class CLH {
 
 - 性能（与synchronized）：与synchronized相比有小幅度提升，ReentrantLock在竞争失败后不会立即挂起，而是会转而加入CLH队列，并`在前驱节点为队头的情况`下，再次尝试执行`两次CAS竞争`（进入队列后先执行一次CAS，设置前驱节点状态为-1后再竞争一次），这种做法在竞争不太激烈的情况下会有更高的性能表现
 
-> synchronized最糟的情况莫过于锁最终膨胀为重量级锁，整个开销包括了锁的升级过程
+> synchronized最糟的情况莫过于锁最终膨胀为重量级锁，**整个开销包括了锁的升级过程**
 
 ## **Semaphore**
 
@@ -226,7 +226,7 @@ public class A1B2 {
     
     private Semaphore[] semaphores;
 
-    private int pos;
+    private volatile int pos;
 
     private int raceCount;
 
