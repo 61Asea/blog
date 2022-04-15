@@ -1,6 +1,11 @@
-# Interview Three：AQS
+#! https://zhuanlan.zhihu.com/p/497994914
+# AQS：CLH队列的变体优化
 
-AbstractQueuedSynchronizer，为ReentrantLock、Semaphore、CountDownLatch等同步工具提供基础实现，是`CLH队列`的一种变体实现
+**本文已收录至个人博客：** https://github.com/61Asea/blog
+
+> AbstractQueuedSynchronizer，为ReentrantLock、Semaphore、CountDownLatch等同步工具提供基础实现，是`CLH队列`的一种变体实现
+
+## **朴素CLH自旋锁**
 
 ```java
 // CLH自旋锁
@@ -64,7 +69,9 @@ public class CLH {
 }
 ```
 
-相比CLH自旋锁busy-waiting，AQS为`sleep-waiting`，所以AQS的队列节点由前驱节点唤醒，而不像自旋锁队列的后驱节点自旋判断
+结论：相比CLH自旋锁`busy-waiting`，AQS为`sleep-waiting`，AQS的队列节点由前驱节点唤醒，替代朴素CLH队列的后驱节点自旋判断
+
+## **AQS的CLH变体**
 
 抽象出**同步器的state（volatile）**，根据定义进入CLH队列的规则：
 
@@ -219,7 +226,7 @@ public class CLH {
 
 **应用：** 无需第三方介入的多线程同时进行任务工具，每个参与者不止有阻塞等待逻辑，而且都会参与到栅栏的迭代逻辑中
 
-# **交替执行**
+# **交替执行打印的demo**
 
 ```java
 public class A1B2 {

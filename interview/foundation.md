@@ -1,5 +1,9 @@
-# Interview Two：Java基础
+#! https://zhuanlan.zhihu.com/p/497998529
+# Java：线程安全基础
 
+**本文已收录至个人博客：** https://github.com/61Asea/blog
+
+目录：
 - 基础并发：原子性、可见性、有序性、可重入、非公平
     - synchronized：
         - 结构：waiting queue（collection list、entry list）、blocking queue、ondeck
