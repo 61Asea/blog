@@ -1,7 +1,5 @@
 # Asea's Blog
 
-Just write down something that 
-
 | 计科基础&nbsp; | 结构算法&nbsp;| Java基础&nbsp;| 系统设计&nbsp;| &nbsp;数据库&nbsp;&nbsp;|&nbsp;框架工具&nbsp;&nbsp;|&nbsp;&nbsp;后记&nbsp;&nbsp; |
 | :---: | :----: | :---: | :----: | :----: | :----: | :----: |
 | [:computer:](#computer-计科基础) | [:pencil2:](#pencil2-结构算法) | [:coffee:](#coffee-Java基础) | [:cloud:](#cloud-系统设计) | [:floppy_disk:](#floppy_disk-数据库) |[:wrench:](#wrench-框架工具)| [:memo:](#memo-后记)|
