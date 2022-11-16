@@ -1,4 +1,7 @@
-# interview ten：tomcat + netty
+#! https://zhuanlan.zhihu.com/p/498000036
+# NIO：简述netty与tomcat的关联性
+
+**本文已收录至个人博客：** https://github.com/61Asea/blog
 
 <!-- - 同步/异步、阻塞/非阻塞
 - I/O模型：同步阻塞模型、同步非阻塞模型、异步模型
@@ -13,8 +16,8 @@
 - 大/小端、高/低水位
 - MappedByteBuffer、DirectByteBuffer与malloc()/mmap()的关系
 - 传统I/O/mmap() + write/零拷贝/大文件传输
-- Tomcat线程模型
-- actor
+- Tomcat的reactor线程模型
+- actor（**消息传递模型**思想）
 
 # **1. JDK的epoll空轮询bug**
 
