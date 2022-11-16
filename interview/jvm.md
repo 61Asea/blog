@@ -177,9 +177,11 @@ jdk7：使用不可变的methodhandle，调用时不再检查参数匹配
 
 > 如tomcat容器希望部署多个应用程序，每个应用程序又可能需要第三方库的不同版本
 
-如何破坏：自定义实现类加载器，重写loadClass方法，避免将加载递归传递给父加载器
+**如何破坏**：自定义实现类加载器，重写loadClass方法，避免将加载递归传递给父加载器
 
-SPI：不算真正意义上的破坏双亲委派，因为其没有重写loadClass方法，而最终的第三方厂商类库仍旧由Application ClassLoader加载
+SPI：
+
+不算真正意义上的破坏双亲委派，因为其没有重写loadClass方法，仍旧将加载传递到了上层Bootstrap ClassLoader，而最终的第三方厂商类库仍旧由Application ClassLoader加载
 
 只是bootstrap classloader通过线程变量保存application classloader引用，并由其辅助加载原本boostrap classloader不可见的类
 
@@ -305,9 +307,11 @@ GC ROOT的范围：
 
 # **5附加题2：三色标记法**
 
+结合下文G1和CMS的三阶段观看
+
 # **6. 垃圾回收器**
 
-![回收器分类](https://asea-cch.life/upload/2022/01/%E5%9B%9E%E6%94%B6%E5%99%A8%E5%88%86%E7%B1%BB-261d097475134718b36fdcbcfa3f2dc2.webp)
+<!-- ![回收器分类](https://asea-cch.life/upload/2022/01/%E5%9B%9E%E6%94%B6%E5%99%A8%E5%88%86%E7%B1%BB-261d097475134718b36fdcbcfa3f2dc2.webp) -->
 
 新生代的垃圾收集器包括：Serial、ParNew、Parallel
 
@@ -317,7 +321,7 @@ GC ROOT的范围：
 
 老年代的垃圾收集器包括：Serial Old、Parallel Old、CMS
 
-- Parallel Old是Serial Old的并行版本，提高并发程度以降低STW时间，它们俩都采用标记-整理算法，收集范围是**全堆**
+- Parallel Old：Serial Old的并行版本，提高并发程度以降低STW时间，它们俩都采用标记-整理算法，收集范围是**全堆**
 
     > 其实对于老年代，使用标记-整理算法并不是最优解，对于老年代而言对象不容易死亡，频繁的移动对象所造成的内存拷贝开销不容忽视。HotSpot系列使用mark-compact，是因为其前身的虚拟机系列的一脉相承
 
@@ -507,7 +511,7 @@ G1是一款通过预测模型计算回收区域，并进行全堆收集的垃圾
 
     - `Old Gen是否太小，在回收率较低的场景下会频繁触发fgc`
 
-    排查措施：查看每次fgc后的情况，如果剩余对象不多，说明eden太小，导致**短周期对象**频繁进入old区；如果剩余对象较多，说明old回收率不高，old区域过小
+    排查措施：查看每次fgc后的情况，如果剩余对象少，说明eden太小，导致**短周期对象**频繁进入old区；如果剩余对象较多，说明old回收率不高，old区域过小
 
 - `是否一次性加载过多内存`
 
@@ -518,6 +522,8 @@ G1是一款通过预测模型计算回收区域，并进行全堆收集的垃圾
 **附加题：CPU飙高，同时FGC怎么办**
 
 > [一次FGC导致CPU飙高的排查过程](http://t.zoukankan.com/ismallboy-p-13023770.html)
+
+> 一定要开启-XX:HeapDumpOnOutOfMemoryError，在oom的时候自动产生堆转储文件，不要直接使用jmap命令导致进程stw
 
 1. `top`：查看cpu的load平均值，查找cpu占用高的`[pid]`
 
@@ -539,7 +545,9 @@ G1是一款通过预测模型计算回收区域，并进行全堆收集的垃圾
 
     - GCT：gc总耗时；FGCT：fgc总耗时；YGCT：ygc总耗时
 
-7. `jmap -histo:live [pid] | head -20`：查看堆占用空间大小排名前20的类型，假设这里发现问题类名`[exceptionClassNameA]`
+7. `jmap -histo:live [pid] | head -20`：查看堆占用空间大小排名前20的类型，假设在发现排名第一的类为疑似问题类`[exceptionClassNameA]`，其与第6点的jstack堆栈信息基本符合
+
+    > 注意，生产环境慎用该命令，因为会造成stw，最好将这部分内存复制到备份机中执行。
 
 8. `jstack -l [pid] > jstack_tmp.txt`：线程堆栈导出为txt文件
 
@@ -547,6 +555,8 @@ G1是一款通过预测模型计算回收区域，并进行全堆收集的垃圾
     - 分析是否为一次性加载过量数据
 
 9. `jmap -dump:live,format=b,file=mat.hprof [pid]`：导出服务进程的堆转储文件
+
+    > 依然会导致stw卡死，回答思路要靠向服务器备份。因为存在多服务器备份（高可用），停掉当前的机器并不会对整个无状态系统造成太大影响
 
 10. mat工具分析堆转储：
 
@@ -558,18 +568,76 @@ G1是一款通过预测模型计算回收区域，并进行全堆收集的垃圾
 
     - 获得引用对象的线程后，转回头结合`jstack_tmp.txt`线程堆栈日志进行分析
 
-11. 进一步确定问题对象后，通过`jstack_tmp.txt`堆栈来分析对象初始化的问题
+11. 进一步确定问题对象后，通过`jstack_tmp.txt`堆栈来分析对象初始化的问题，定位到问题代码
 
 ## 统一回复
 
-通过jstack导出堆栈日志和jmap导出堆转储文件结合分析，排查问题是否为：
+linux系统命令：top -Hp / top
+
+java命令：jstack（导出堆栈日志）和jmap（分析堆内存、导出堆转储文件）结合分析，排查问题是否为：
 - 出现内存泄漏
 - young、old区域分配不均
 - 配置不够
+- 一次性加载过多内存到堆中
+
+1. 压测环境下提前发现问题
+
+2. 在生产环境负载均衡的情况下（高可用），把出现问题的服务摘出来，再把堆转储文件导出来进行分析
+
+### 企业级生产工具：arthas（阿尔萨斯），影响性能10%～15%
+
+- dashboard：继承了top、top -Hp、jstat，可查看线程cpu情况，堆占用情况
+
+- heapdump：替代jmap -dump:live,format=b
+
+- thread -b：查找产生死锁的线程，替代了jstack查找死锁的步骤
+
+- jvm：替代jinfo
+
+- jad [class]：在线反编译类名
+
+- redefine [class二进制文件]：重定义class，做agent热更
+
+- trace [class二进制文件] [方法名]：分析方法过程的瓶颈
 
 # **11. GC参数调优**
 
-调优的目的是为了用更小的硬件获取更高的吞吐量
+调优是用更小的硬件获取更高的吞吐量，一般关注以下几点：
+
+- 新生代和老年代的分配比率
+
+    - 新生代过小，可能导致短周期对象频繁流入老年代进而频繁fgc
+    - 老年代过小，可能导致回收率不高的情况下频繁fgc
+
+- 各个收集器在不同的堆内存大小下表现不同
+
+    ```
+    其实CMS在较小的堆、合适的workload的条件下暂停时间可以很轻松的短于G1。
+    
+    在2011年的时候Ramki告诉我堆大小的分水岭大概在10GB～15GB左右：以下的-Xmx更适合CMS，以上的才适合试用G1。
+    
+    现在到了2014年，G1的实现经过一定调优，大概在6GB～8GB也可以跟CMS有一比，我之前见过有在-Xmx4g的环境里G1比CMS的暂停时间更短的案例
+    ```
+
+    原因：CMS的remark阶段是扫描整个根集合，包括了young gen，在分配速率不温和的情况下可能在concurrent marking期间产生过多新对象，从而导致remarking阶段的stw阶段更长
+
+- G1基于开销-收益模型，在预测回收时间的设置上不宜过短
+
+    ```
+     -XX:MaxGCPauseMillis不要设得太低，不然G1跟不上目标就容易导致垃圾堆积，反而更容易引发full GC而降低性能。通常设到100ms、250ms之类的都可能是合理的。设到50ms就不太靠谱，G1可能一开始还跟得上，跑的时间一长就开始乱来了。
+
+    这也提醒大家：如果您的程序要长时间运行，那么在技术选型评估GC性能的时候要让测试程序跑足够长时间才能看清状况。多久才够长取决于实际应用要连续运行多久。不然一个要运行一个月才重启一次的程序，如果测试的时候只测了两个小时就觉得没问题，实际上线跑起来可能正好两个半小时的时候来了一次几分钟的full GC暂停，那就纱布了⋯
+    ```
+
+- 在明确知道程序内存能跑到多少的情况下，-Xms最小堆和-Xmx最大堆设置一样大，防止内存抖动
+
+# 12. 其它GC
+
+Azul的C4，Red Hat的Shenendoah优化点：
+
+- 使用某种形式的read barrier，以实现安全的一边移动对象和一边修正对象的引用，做到并发拷贝
+
+read barrier：不记录更改值，转而记录读取对象时的值，最保守但最安全的做法
 
 # 参考
 - [JVM-10问](https://mp.weixin.qq.com/s?__biz=MzkzNTEwOTAxMA==&mid=2247485143&idx=1&sn=fd442fde5fbea90ae2314b1f7f88b1d8&chksm=c2b24e2af5c5c73c91c54d4932598e8d375803c361e2e5b52c32daa9ca200e9ac348ba4f04cb&token=982147105&lang=zh_CN&scene=21#wechat_redirect)
@@ -579,6 +647,7 @@ G1是一款通过预测模型计算回收区域，并进行全堆收集的垃圾
 - [ParNew和CMS的工作原理](https://www.jianshu.com/p/a66fa15cc64a)
 
 - [G1调优实践日记--G1HeapWastePercent和InitiatingHeapOccupancyPercent的应用](https://blog.csdn.net/lovejj1994/article/details/109620239)
+- [调优大全](https://blog.51cto.com/u_15746412/5575712#1__6)
 
 # 重点参考
 - [请问Java反射的性能为什么比直接调用慢一个数量级左右？](https://www.zhihu.com/question/30097357)
@@ -596,3 +665,5 @@ G1是一款通过预测模型计算回收区域，并进行全堆收集的垃圾
 - [三色标记和漏标多标总结](https://www.jianshu.com/p/12544c0ad5c1)
 - [R大-G1](https://hllvm-group.iteye.com/group/topic/44381)
 - [对象进入老年代的4个条件](https://blog.csdn.net/weixin_38106322/article/details/108943731)
+
+- [视频：马士兵JVM排查问题实战](https://www.bilibili.com/video/BV1da411Q7sT?p=12&vd_source=24d877cb7ef153b8ce2cb035abac58ed)
