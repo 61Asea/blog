@@ -69,9 +69,11 @@ public class CLH {
 }
 ```
 
-结论：相比CLH自旋锁`busy-waiting`，AQS为`sleep-waiting`，AQS的队列节点由前驱节点唤醒，替代朴素CLH队列的后驱节点自旋判断
+结论：CLH自旋锁为`busy-waiting`，AQS为`sleep-waiting`，AQS的队列节点由前驱节点唤醒，替代朴素CLH队列的后驱节点自旋判断
 
 ## **AQS的CLH变体**
+
+组成：一个双向链表队列、一堆队列Node状态、一个CLH的state、唤醒机制
 
 抽象出**同步器的state（volatile）**，根据定义进入CLH队列的规则：
 
@@ -169,7 +171,7 @@ public class CLH {
 
 - release(int)：**返还**当前信号量计数器传入个数个许可证，公平模式下如果没有出现与后驱线程竞争成功的线程，才会唤醒后续线程进行**传播**
 
-**应用：**
+**应用：** 
 
 1. 限速，控制应用速率
 
@@ -288,5 +290,54 @@ public class A1B2 {
 }
 ```
 
+# **面试 问题**
+
+1. AQS是什么？
+
+    - 双向链表组成的waiting queue
+    - 队列节点Node的状态（SIGNAL、CANCEL、PROGRATE）
+    - AQS的CLH状态（定制ReentrantLock、Semaphore等）
+    - 唤醒线程的机制（由持有锁线程在release资源时，访问头节点进行唤醒）
+
+2. 非公平可重入锁和公平可重入锁
+
+    指通过实现AQS的RenntrantLock的两种模式，两者的区别在于竞争锁资源的线程是否直接进入队列排队
+    
+    具体代码：ReentrantLock#FairSync对tryAcquire(int)的实现，调用了AQS#hasQueuedProcessors()方法，判断是否有排队的线程
+
+3. AQS的设计模式：模板方法设计模式
+
+    **模板方法必须实现，在模板方法默认返回throws Exception；钩子方法非必须实现，更加体现可加入性的回调**
+
+4. AQS（LockSupport/cpu）是否存在虚假唤醒
+
+    - 多线程虚假唤醒
+        
+        - 描述：指唤醒机制是唤醒很多处在阻塞态下的线程，但只有部分（甚至只有一个）线程是有效的，其它线程是无效的通知
+
+        - 解决方案：
+        
+            - 唤醒后的线程会在park()/wait()处继续执行，所以要保证等待函数处于while/for(;;)的判断中，保证可以按照代码的流程**重新走到判断逻辑**
+
+            - 判断逻辑应保证多线程的安全性（获取操作应具备原子性）
+
+    - nio 空轮询：指的是selector.select()可能会无缘无故被wakeUp，跟虚假唤醒是两个概念，后者算是bug
+
+    存在虚假唤醒问题，虽然AQS采用了排队机制，并由持有资源线程唤醒后续线程。但是在非公平模式下，仍旧存在新竞争线程（未处于队列）与队头第一个线程的竞争关系，需要通过for(;;)保证代码流程能走到原子性竞争判断逻辑中
+
+5. 为什么唤醒线程的unparkSuccesor()方法，是从后往前遍历的？
+
+    cas设置尾节点的代码，只能保证新的tail结点的prev一定是安全的，但不能保证旧的tail的next指针已经更新指向到新的tail
+
+6. 怎么理解Node的SIGNAL状态？
+
+    SIGNAL（信物），是持有锁线程与队列线程交互的信物，AQS的唤醒机制是由当前持有锁线程主动唤醒后续线程
+
+    唤醒交互：当有线程加入到等待队列时，往队头节点设置信物标志位，而后续持有锁的线程释放资源时，会根据队头结点的信号标志位，决定是否唤醒时后续节点
+
 # 参考
 - [AQS基础——多图详解CLH锁的原理与实现](https://zhuanlan.zhihu.com/p/197840259)
+
+- [为什么AQS唤醒线程要从尾部往前遍历](https://blog.csdn.net/qq_37699336/article/details/124294697)
+
+- [视频：黄俊AQS](https://www.bilibili.com/video/BV19B4y1w7pD?p=4&vd_source=24d877cb7ef153b8ce2cb035abac58ed)
