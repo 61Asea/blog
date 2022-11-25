@@ -205,6 +205,10 @@
 
 # **ET（边缘触发）和LT（水平触发）**
 
+# **段页式内存管理**
+
+# **随机I/O和顺序I/O**
+
 # 参考
 - [腾讯WXG | 一二+面委+HR|已拿offer](https://leetcode-cn.com/circle/discuss/ON7r4A/)
 
