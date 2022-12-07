@@ -112,7 +112,7 @@ public class EmployService {
 
 结果：employee的age可能会小于1000
 
-原因：以上的代码并不能符合事务串行执行并提交的预期，synchronized代码块的生效区域并没有覆盖整个事务操作，多个线程可能会读到相同的age值进行操作，**可以理解为synchronized锁的是this引用**
+原因：以上的代码并不能符合事务串行执行并提交的预期，synchronized代码块的生效区域并没有覆盖整个事务操作，多个线程可能会读到相同的age值进行操作，**可以理解为synchronized锁的只是this引用**
 
 > **该同步方法是增强对象执行的其中一步**，synchronized即并未包含事务的提交操作
 

@@ -282,7 +282,7 @@ EXPLAIN SELECT e FROM `demo` WHERE b = 1 AND f = 0;
 
     - RECORD：行锁
 
-    - GAP：间隙锁，innodb在RR隔离级别下使用，用于解决幻读问题
+    - GAP：间隙锁，innodb在RR隔离级别下使用，用于解决**当前读**的幻读问题（没有解决同一事务内同时存在快照读和当前读的幻读问题）
 
         `生效范围`：
         
@@ -454,15 +454,52 @@ innodb特有的日志：
 
     > binlog的STATEMENT格式日志需要搭配**RR隔离级别来达成操作的阻塞提交顺序**，因为binlog的记录是以事务commit为触发点进行一次性提交，如果使用RU/RC将无法感知真正的执行顺序
 
-主从同步过程：
+## 主从同步
 
-1. master：创建dump线程，将binlog内容推送到slave服务器上
+过程：
 
-2. slave：启动I/O线程接收binlog数据，保存到relay log（中继日志）中
+1. master：顺序I/O将sql操作写到binlog中
 
-3. slave：启动SQL线程，读取relay log中的数据应用到本机数据上
+2. master：创建dump线程，将binlog内容**推送**到slave服务器上
 
-主要分为三种主从同步模式：
+3. slave：启动I/O线程接收binlog数据，并保存到relay log（中继日志）中，整个过程也是顺序I/O
+
+4. slave：启动SQL线程，读取relay log中的数据（顺序I/O），并应用到本机数据上（随机I/O）
+
+瓶颈：
+
+- 在sql thread将日志应用到从库里时，查找磁盘数据的过程为随机I/O，需要对数据在磁盘的位置进行寻址
+
+- sql thread在5.6之前都是单线程，主库多线程并发写的情况下，从库单线程同步讲产生较大延迟
+
+解决方案：**MTS（multi thread slave）**，即开启多个sql thread **worker**进行`并行复制`，但并行复制涉及数据并发安全问题
+
+- 5.6：以库为维度进行分发，各个worker线程同步的数据间不存在数据安全问题
+
+    - 单库多表无法应用、且存在热点数据问题
+
+- mariadb/5.7：基于组提交下的`GTID机制`，通过last_commited_number和sequence_number来区分处于不同组的事务，同一个组内的事务并发执行不会有线程安全，`总之，MySQL 5.7版本后，复制延迟问题永不存在`
+
+    > 同一组中，所有已经处于prepare阶段的事务，都是可以并行提交的。因为处理这个阶段的事务，都是没有冲突的，该获取的资源都已经获取了。反过来说，**如果有冲突，则后来的会等已经获取资源的事务完成之后才能继续，故而不会进入prepare阶段**
+
+    - 二阶段提交：保证redo log和binlog的一致性
+        - redo log存在prepare的数据，binlog没有，则数据丢弃（从库不会读取到）
+        - redo log存在prepare的数据，且binlog有，则进行补交操作，将该数据commit
+        
+        过程：
+        1. redo log prepare write
+        2. binlog write
+        3. redo log prepare fsync
+        4. binlog fsync
+        5. redo log commit write
+
+    - 组提交：指redo log和binlog的二阶段提交过程中的空隙时间内进行flush队列中的事务集合（1～3），这个集合称为一个事务组
+
+        - flush、sync、write：组提交的三种队列，首次进入队列的事务都称为**队长事务**，会按照一定时长内接收其它进入队列的事务，并辅助其它事务进行flush、sync等操作
+
+        > 当有一个队长事务进行flush、sync操作时，其它事务都暂时不能进入这些队列中
+
+三种主从同步模式：
 
 - 异步复制：默认模式，在**事务提交后**主库把binlog数据发送给从库即可，不关心从库是否应用
 
@@ -490,7 +527,7 @@ count(*) = count(1) > count(主键字段) > count(字段)
 
 扫描时优先通过二级索引进行查询，因为二级索引占用空间更小，遍历二级索引的I/O成本更低
 
-*、1、0：表示\* != null、1 != null、0 != null的意思，言外之意就是不管是否为null都会计数，这样就无需读取行字段的值，效率更高
+*、1、0：表示\* != null、1 != null、0 != null的意思，言外之意就是不管是否为null都会计数，这样就无需读取行字段的值进行null判断，转而读取innodb上的计数器，效率更高
 
 # 参考
 - [数据库索引的知识点](https://segmentfault.com/a/1190000023314270)：索引类型（按结构划分）、聚簇索引、非聚簇索引、覆盖索引、索引种类（按作用范围）、最左匹配法则、`索引失效场景`、`索引不适用场景`
@@ -521,3 +558,7 @@ count(*) = count(1) > count(主键字段) > count(字段)
 - [马士兵教育视频：mysql索引、索引优化、谓词下推](https://www.bilibili.com/video/BV15t4y1Y73N?p=53&vd_source=24d877cb7ef153b8ce2cb035abac58ed)
 
 - [马士兵教育视频：mvcc、undo log、redo log、binlog](https://www.bilibili.com/video/BV1Jg411o7c2?p=6&vd_source=24d877cb7ef153b8ce2cb035abac58ed)
+
+- [马士兵教育视频：主从复制延迟如何产生？怎么解决？](https://www.bilibili.com/video/BV15t4y1Y73N?p=46&spm_id_from=pageDriver&vd_source=24d877cb7ef153b8ce2cb035abac58ed)
+
+- [MySQL 5.7新特性：并行复制原理（MTS）](https://blog.csdn.net/andong154564667/article/details/82117727)
