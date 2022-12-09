@@ -769,6 +769,28 @@ public Object proceed() throws Throwable {
 
 3. 在`postProcessAfterInitialization`中，会再次查找Advisor类型的组件，并从它们之中找出当前bean可应用的增强组件，若有则返回代理对象
 
+4. aspectJ的先后顺序问题，通过Comparator对注解进行排序
+
+    ```java
+    // ReflectiveAspectJAdvisorFactory
+    public class ReflectiveAspectJAdvisorFactory extends AbstractAspectJAdvisorFactory implements Serializable {
+	    private static final Comparator<Method> METHOD_COMPARATOR;
+
+        static {
+            Comparator<Method> adviceKindComparator = new ConvertingComparator<>(
+                    new InstanceComparator<>(
+                            Around.class, Before.class, After.class, AfterReturning.class, AfterThrowing.class),
+                    (Converter<Method, Annotation>) method -> {
+                        AspectJAnnotation<?> annotation =
+                            AbstractAspectJAdvisorFactory.findAspectJAnnotationOnMethod(method);
+                        return (annotation != null ? annotation.getAnnotation() : null);
+                    });
+            Comparator<Method> methodNameComparator = new ConvertingComparator<>(Method::getName);
+            METHOD_COMPARATOR = adviceKindComparator.thenComparing(methodNameComparator);
+        }
+    }
+    ```
+
 # 参考
 - [基于注解的SpringAOP源码解析（二）](https://mp.weixin.qq.com/s?__biz=MzU5MDgzOTYzMw==&mid=2247484595&idx=1&sn=6395c62a309422bd25d039e8bde505bd&chksm=fe396e8dc94ee79b494e0d05434a856e91e03d42b7d64a383e007cc563c277a8f0924997661c&scene=178&cur_album_id=1344425436323037184#rd)
 

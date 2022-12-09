@@ -145,10 +145,42 @@ JDK动态代理：
 - 关系：被代理类和代理类是接口实现关系
 - 调用方式：委托，在调用具体代码前，调用重写的InvokeHandler方法，来实现对代码的增强
 
+    ```java
+    new InvocationHandler() {
+        public Object invoke(Object proxy, Method method, Object[] args)
+            throws Throwable
+        {
+            // ....添加扩展点
+
+            try {
+                return method.invoke(delegate, args) ;
+            } catch (InvocationTargetException ex) {
+                throw ex.getCause() ;
+            }
+        }
+    } ;
+    ```
+
 CGLIB动态代理：
 - 机制：基于asm第三方框架，通过**修改字节码生成一个`子类`**，然后重写父类的方法，实现对代码的增强
 - 关系：被代理类和代理类是继承关系
 - 调用方式：调用methodInterceptor.intercept()
+
+    ```java
+    Enhancer enhancer = new Enhancer();
+    enhancer.setSuperclass(MainServiceImpl.class);
+    enhancer.setCallback(new MethodInterceptor() {
+        @Override
+        public Object intercept(Object obj, Method method, Object[] objects, MethodProxy methodProxy) throws Throwable {
+            System.out.println("begin time:"+System.currentTimeMillis());
+            Object object = methodProxy.invokeSuper(obj, objects);
+            System.out.println("end time:"+System.currentTimeMillis());
+            return object;
+        }
+    });
+    MainService proxy= (MainService)enhancer.create();
+    proxy.doSomeThing();
+    ```
 
 ```java
 // JDK代理生成的class
@@ -165,6 +197,21 @@ public void 被代理方法() {
 
 默认情况下，spring使用jdk动态代理，若被代理对象没有接口，自动切换为cglib动态代理
 
+# **5. AOP实现原理**
+
+通过动态代理的方式产出代理对象，创建内层拦截器链串联增强能力，并在链条执行的最尾部时的默认拦截器，从而触发目标方法的调用
+
+过程：
+
+1. 创建代理对象
+
+    - 传入拦截器数组，目标对象，目标对象接口数组
+    - 调用 getProxy 方法的时候，会根据接口数量选择使用JDK proxy还是cglib
+        - 大于0用JDK PROXY
+        - 等于0用Cglib
+
+2. 调用代理对象方法：对proxy对象的调用，会进入到拦截器链的逻辑中，之中通过维护拦截器数组下标进行递归调用
+
 **问题：AOP使用this导致注解失效**
 
 因为this获得的是被代理对象，而不是增强对象，所以没有增强行为
@@ -177,7 +224,7 @@ public void 被代理方法() {
 
 3. @Configuration思路，实现cglib的拦截器，具体通过调用invokeSuper()来取代调用invoke()
 
-# **5. 事务传播机制**
+# **6. 事务传播机制**
 
 开启事务：
 通过@EnableTransactionManagement(proxyTargetClass = true)开启事务，注解包括`@Import(TransactionManagementConfigurationSelector.class)`，由ConfigurationClassPostProcessor解析
@@ -207,7 +254,7 @@ public void 被代理方法() {
 
 - MANDATORY：当前事务必须运行在事务内部，如果没有运行的事务，就抛出异常
 
-# **6. 共有几种装配方式**
+# **7. 共有几种装配方式**
 
 注入对象的方式：
 
