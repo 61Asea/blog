@@ -21,65 +21,75 @@
 
 # **1. JDK的epoll空轮询bug**
 
-bug表现：在进程while(1)循环中调用select()，select()无法阻塞且返回0事件，导致while(1)一直执行空跑CPU直至100%
+bug表现：在进程while(1)循环中调用select()，**select()无法阻塞且返回0事件**，导致while(1)一直执行空跑CPU直至100%
 
-操作系统原因：Linux2.6的内核中，poll和epoll对于**突然中断的连接socket**，会对返回的事件集合（eventSet）置为POLLHUP/POLLERR，从而使得eventSet发送变化，导致Selector被唤醒
+操作系统原因：
+Linux2.6的内核中，poll和epoll对于**突然中断的连接socket**，会对返回的事件集合（eventSet）置为POLLHUP/POLLERR，从而使得eventSet发送变化，导致Selector被唤醒
 
-Jetty/Netty解决方案：
+后续jdk层面在**调用selector的select()方法时，不会阻塞，会立刻返回0**
 
-1. 新增select死循环阈值、0事件唤醒计数器
+Netty解决方案：
 
-2. 计算从select调用前到被唤醒的时长t1，对比select()函数传入的阻塞时间t2，若t1 < t2 && select返回0，则计数器递增1
+- 判断产生空轮询：
 
-3. 当计数器达到死循环阈值，则触发bug修复逻辑
+    1. 新增select死循环阈值（512次）、selectCnt（select返回0的计数器）
 
-    修复逻辑：**新起一个selector**，复制SelectionKey关注的事件到新的selector中，使用新的selector进行阻塞
+    2. 记录select的实际唤醒时长t1，对比select的期望阻塞时长t2，当t2 - t1 < (t2 /2)，并且select返回0时，计数器递增1
+
+    3. 当计数器达到死循环阈值，则触发bug修复逻辑
+
+- 修复：**新起一个selector**，复制SelectionKey关注的事件到新的selector中，使用新的selector进行阻塞
 
 # **2. BIO、NIO、AIO**
 
 - BIO：同步阻塞I/O，进程在发起I/O请求后进入阻塞状态等待I/O完成
 
-    网络结构：one connection per thread，每个客户端连接都对应一个处理线程，没有分配到线程的连接会阻塞等待或拒绝
+    - 网络结构：one connection per thread，每个客户端连接都对应一个处理线程，没有分配到线程的连接会阻塞等待或拒绝
 
 - NIO：同步非阻塞I/O，进程发起I/O请求后不会进入阻塞状态，对channel进行读写操作会立即返回，由多路复用器selector来监视注册的fd并进行数据读写操作
 
-    网络结构：基于Reactor模型，由reactor（selector）提供句柄描述符的注册/回调机制，并根据就绪事件类型分发到不同的handler中进行处理（OP_ACCEPT、OP_READ、OP_WRITE）
+    - 网络结构：基于Reactor模型，由reactor（selector）提供句柄描述符的注册/回调机制，并根据就绪事件类型分发到不同的handler中进行处理（OP_ACCEPT、OP_READ、OP_WRITE）
 
 - AIO：异步I/O，进程发起I/O请求后不会进入阻塞状态，由内核占用cpu完成对I/O请求的处理，并通知进程进行处理
 
-    网络结构：nodejs
+    - 网络结构：以nodejs为代表
 
-> NIO为什么高效？
+> NIO一定高效吗？答：需根据场景分析，在低并发I/O下，NIO不一定就比BIO高效
 
-需根据场景分析，在低并发I/O下，NIO不一定就比BIO高效
+NIO高效的几个原因：
 
-1. 采用selector监控多个fd，替代bio的one connection per thread，后者在过多连接下将导致巨大的线程切换开销
+1. 减少需要的线程数量，降低切换开销：采用selector监控多个fd，替代bio的one connection per thread
 
-2. 只有处于活动状态的io才会去占用线程，不会使得线程白白因为io而阻塞，提高**线程利用率**
+2. 提高**线程利用率**：只有处于活动状态的io才会去占用线程，不会使得线程白白因为io而阻塞
 
-3. 使用NIO提供的直接内存（mmap）时，省去将数据从kernel page cache与用户进程空间之间的拷贝开销
+3. NIO提供的直接内存（mmap），省去将数据从kernel page cache与用户进程空间之间的拷贝开销
 
-4. 使用NIO.channel.transferTo()/transferFrom()，调用系统内核sendfile()函数，实现文件传输的零拷贝
+4. 可实现文件传输的零拷贝，通过调用NIO.channel.transferTo()/transferFrom()（底层系统内核sendfile()函数）
 
 # **3. NIO的buffer是双向的吗？**
 
-是的，buffer支持数据的读入与写出，nio中需要调用filp()方法进行读/写模式的切换，而netty则通过维护读、写指针简化操作
+是的，ByteBuffer同时支持数据的读入与写出
+
+- jdk.nio：需要调用filp()方法进行读/写模式的切换，读写共用position指针
+- netty：同时维护readerIndex读指针、writeIndex写指针，无需进行模式切换，简化操作
 
 > bio：读使用in流，写使用out流
 
-- nio.ByteBuffer：读写共用position指针
-
-- netty.ByteBuf：分为readerIndex读指针、writeIndex写指针
-
 # **4. Reactor**
 
-Reactor模型分为：
+<!-- I/O线程/worker线程 -->
 
-- `reactor`：负责I/O事件的监听（查询与响应），当检测到I/O事件时，分发给handlers处理
+Reactor模型的核心理论：I/O多路复用、 I/O线程、worker线程
 
-- `handlers`：与I/O事件进行**绑定**，负责I/O事件的处理
+一个reactor模型至少包括`reactor`和`handlers`：
 
-1. 单Reactor单线程模型：reactor与handlers共用一个线程，reactor需要监视所有的事件，某个handler的阻塞将直接影响其他handler的执行，**无法充分利用多核的性能**
+- `reactor`：负责I/O事件的监听（查询与响应），当检测到I/O事件时，分发给handlers处理，可以理解为是对**I/O多路复用器**的一层包装
+
+- `handlers`：与I/O事件进行**绑定**，负责I/O事件的处理，又称为**I/O线程**
+
+- `worker`：系统的业务处理模型，可能为单线程或多线程
+
+1. 单Reactor单worker模型：reactor与handlers共用一个线程，reactor需要监视所有的事件，某个handler的阻塞将直接影响其他handler的执行，**无法充分利用多核的性能**
 
     - 核心问题：
         
@@ -87,13 +97,13 @@ Reactor模型分为：
 
         2. reactor监视所有的事件
 
-例子：如果某个handler执行业务时长过久，服务将无法进行其他socket fd的建立、读取工作
+    例子：如果某个handler执行业务时长过久，服务将无法进行其他socket fd的建立、读取工作
 
 2. 单Reactor多线程模型：将业务从handlers中剥离开，使用线程池进行处理，handlers只负责I/O操作
 
-    - 核心问题：reactor与handlers依旧共用主I/O线程，reactor仍需要监视所有的事件
+    - 核心问题：reactor与handlers依旧共用主I/O线程、reactor仍需要监视所有的事件
 
-例子：如果突然间服务有大量的连接建立到来，则这种瞬时的连接高并发可能会导致**其他类型的就绪事件的处理不及时**（如OP_READ、OP_WRITE）
+    例子：如果突然间服务有大量的连接建立到来，则这种瞬时的连接高并发可能会导致**其他类型的就绪事件的处理不及时**（如OP_READ、OP_WRITE）
 
 3. `多Reactor多线程模型`：**主流方案**，将reactor分为多主多从关系（通常一主多从），每个reactor都有自己的selector，主reactor负责建立连接，从reactor负责客户端fd的I/O读写，具体业务则交由业务线程池进行
 
@@ -105,7 +115,7 @@ Reactor模型分为：
 
 线程模型：`多Reactor多线程`模型，每个reactor都有一个selector以注册句柄的感兴趣事件，通过主Reactor并按某种规则分发client fd到`从Reactor`中
 
-- 主Reactor：boss线程组，负责连接建立、分发连接到从Reactor
+- boss线程组：主Reactor，负责连接建立、分发连接到从Reactor
 
     - 角色：Acceptor（OP_ACCEPT事件）
 
@@ -115,7 +125,7 @@ Reactor模型分为：
 
     - 具体逻辑：非阻塞accept()方法，使用while(1)从全连接队列中取出三次握手完毕的客户端句柄
 
-- 从Reactor：worker线程组，负责client fd的**I/O读写**、业务线程池投递
+- worker线程组：从Reactor，负责client fd的**I/O读写**、业务线程池投递
 
     - 角色：handlers（OP_READ/OP_WRITE）
 
@@ -123,11 +133,11 @@ Reactor模型分为：
 
     - 驱动方式：selector阻塞，当有就绪的OP_READ、OP_WRITE事件发生时被唤醒
 
-    - 具体方式：非阻塞读/写，使用while(1)进行读写操作直至抛出EWOULDBLOCK异常
+    - 具体方式：非阻塞读/写，指使用while(1)进行读写操作，**直至抛出EWOULDBLOCK异常**
 
         > 非阻塞读/写：被唤醒只是知道有就绪的fd，可以从rdlist（selectedKeys）中取出，但具体能读、写的数据量不确定，可将未完成的读、写放到下次epoll_wait()周期；而如果使用阻塞读/写将直接导致该I/O线程阻塞，影响其他句柄的I/O读写
 
-- 业务线程池：用于剥离`从Reactor`的非I/O操作（如：decode、compute、encode），专注于业务逻辑的处理
+- 业务线程池（worker）：剥离`从Reactor`的非I/O操作（如：decode、compute、encode）
 
 # **6. 什么是黏包、半包，如何解决**
 
@@ -139,11 +149,11 @@ Reactor模型分为：
 
 解决方案：
 
-- 黏包：采用**拆包**方式（length | data的格式进行解码）
+- 黏包：采用**拆包**，在读字节流数据时，通过`length | data`的格式进行解码以感知包长度
 
     > netty使用`LengthFieldBasedFrameDecoder`读取长度信息
 
-- 半包：采用**累加缓存**方式，出现半包后对之前解析的数据进行缓存，并累加读取未读完的数据后进行**拼接**
+- 半包：采用**累加缓存**，出现半包后会对之前解析出的数据进行缓存，并累加读取未读完的数据后进行**拼接**，直至形成一个完整的包
 
 # **7. 大/小端**
 
@@ -262,6 +272,9 @@ JDK.NIO高性能：
     > linux下申请内存就是通过`brk()`和`mmap()`两个系统调用，除了这两个之外的内存管理函数（如malloc()），都是上层运行库封装出来的，底层都要走到这两个函数调用上
 
 # **10. Netty的零拷贝实现**
+- 用户进程堆空间
+- kernel page cache / kernel socket buffer
+- 磁盘高速缓存 / 网卡高速缓存
 
 读取磁盘数据，然后发送数据：
 
@@ -293,7 +306,9 @@ JDK.NIO高性能：
 
 - **在需要修改数据的情况下，使用`mmap() + write()`**
 
-    > netty的directByteBuf、jdknio的directByteBuffer使用这种方式：mmap()虚拟内存对应映射socket fd（虚拟空间映射kernel socket buffer + kernel socket buffer映射socket fd）
+    > netty的directByteBuf、jdknio的directByteBuffer使用这种方式：mmap()虚拟内存对应映射socket fd
+    
+    <!-- （虚拟空间映射kernel socket buffer，然后kernel socket buffer再映射到socket fd） -->
 
     - 上下文切换：4次
 
@@ -301,6 +316,7 @@ JDK.NIO高性能：
 
         - 第一次：从磁盘内存缓冲区拷贝到kernel page cache（DMA）
         - 第二次：从kernel page cache中拷贝到kernel socket buffer（CPU）
+            > mmap()相比read()，省去了将数据从kernal page cache / kernal socket cache拷贝到用户空间的成本
         - 第三次：从kernel socket buffer拷贝到网卡高速缓存中（DMA）
 
     - 优化思路：不可避免需要进程操作，则使用mmap()建立起虚拟内存与文件的映射，避免内核缓冲区到用户进程堆空间的拷贝
@@ -422,3 +438,6 @@ public class StandardWrapperValue {
 - [Netty——发送消息流程&高低水位](https://www.cnblogs.com/caoweixiong/p/14676840.html)
 
 - [Tomcat NIO(5)-整体架构](https://mp.weixin.qq.com/s?__biz=MzI0MDE3MjAzMg==&mid=2648393624&idx=1&sn=ddb2852d26daa1a16a74e183a0d4ac08&chksm=f1310af7c64683e183431a43ab5e4528a1d53d2ba4d7f591d8b5da1a401f3737a378476cc1c8&scene=178&cur_album_id=2123520319532400647#rd)：Acceptor、Poller、I/O线程池、BlockPoller
+
+- [epoll 空轮询bug：jetty](https://blog.csdn.net/weixin_31776191/article/details/114104590)
+- [netty对epoll空轮询的解决方案](https://www.zhihu.com/question/291370310)

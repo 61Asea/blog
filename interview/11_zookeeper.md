@@ -1,6 +1,6 @@
 # interview eleven：zookeeper
 
-# **1. Zookeeper的理解**
+# **Zookeeper的理解**
 
 分布式协调的集中式服务，提供**高可用**、**顺序访问控制**的能力，用于解决分布式环境下**一致性**的问题
 
@@ -18,7 +18,7 @@
 
     依旧会有不一致的情况出现，来源于**过半写入机制**，结点只要有过半写入成功即代表整个集群写入成功，如果恰好有请求打在**未写入完毕**的结点，会出现查询不一致的情况
 
-    > 我们在讨论CAP时，**默认忽略延迟**导致的一致性问题，zk只能保证在一段时间后数据必定进入**最终一致性**
+    > 我们在讨论CAP时，**默认忽略延迟**导致的一致性问题，延迟的过程必然会带来数据的不一致。zk只能保证在一段时间后数据必定进入**最终一致性**
 
 - 可靠性 ：一旦服务端成功应用了一个事务，则其引起的改变会一直保留，直到被另外一个事务所更改
 
@@ -42,25 +42,25 @@
 
 # **zk集群架构**
 
-分为`zk服务集群`与`客户端`，客户端可以连接到zookeeper集群服务的任意**非leader服务器（leaderServes配置默认为false）**上
+分为`zk服务集群`与`客户端`，客户端可以连接到zookeeper集群服务的任意**非leader服务器**（leaderServes配置默认为false）上
 
-![cs](https://asea-cch.life/upload/2022/03/cs-6e61fcd2de08482ca04af1d9b2dfd7d7.jpg)
+> 除非显式配置leaderServes，**否则默认leader不允许客户端连接**
+
+![cs](https://mmbiz.qpic.cn/mmbiz_jpg/ibBMVuDfkZUmqb0t9xOJOXebntahoHMGMCm6fTFSXooaLURMMJJxQfvA9pJqicu1gJGUxUalNTKQHibArrPfOw2HA/640?wx_fmt=jpeg&wxfrom=5&wx_lazy=1&wx_co=1)
 
 1. 服务端：zookeeper server集群
 
-    - 基于Leader的非对等部署
+    - 基于Leader的**非对等**部署
 
         - 单点写一致性：只有leader节点可以写入数据，其他节点收到写入数据的请求，则会将之**转发给leader节点**
 
         - Leader：`发起投票`、`提议决议`、`更新系统状态`、`写数据`、数据同步、过半写成功提交
 
-            > 除非显式配置leaderServes，**否则默认leader不允许客户端连接**
+        - Follower：接收客户端请求（写请求转发给leader节点，自身只负责读请求）、`参与投票`、状态被同步、写入成功的返回响应
 
-        - Follower：接收客户端请求（写请求转发给leader节点）、`参与投票`、状态被同步、写入成功的返回响应
+        - Observer：接收客户端请求（写请求转发给leader节点，自身只负责读请求）、状态被同步、`横向扩展`
 
-        - Observer：接收客户端请求（写请求转发给leader节点）、状态被同步、`横向扩展`
-
-            不参与投票过程，只同步leader的集群状态，Observer的目的是**避免太多从节点参与过半写过程，影响性能**
+            > Observer不参与投票过程，只同步leader的集群状态，Observer的目的是**避免太多follower节点参与过半写过程，影响性能**。这样Zookeeper只要使用一个几台机器的小集群就可以实现高性能了，如果要横向扩展的话，只需要增加Observer节点即可
             
     - 过半机制：只要过半机器正常工作，那么整个集群对外就是可用的，用于**解决脑裂问题**
 
@@ -68,17 +68,17 @@
 
         - `过半写`：只要过半写入成功，就代表整个集群写成功
 
-        - 脑裂问题：在没有过半机制下，如果出现网络分区（多机房部署），则分区下可能出现新的leader，整个集群就出现了两个leader
+        - 脑裂问题：仅出现在没有过半机制下，如果出现网络分区（多机房部署），则分区下可能出现新的leader，整个集群就出现了两个leader
 
-            解决方式：**少于一半节点**的分区无法选举出新leader
+            过半机制的解决方式：**少于一半节点**的分区无法选举出新leader
 
-        - 奇数部署（容忍度）：在过半机制下，宕掉多个zk节点后，剩余节点必须大于`总数 / 2`集群才可正常提供服务，所以`容忍度`为`ceil(N/2) - 1`
+            - 奇数部署（容忍度）：在过半机制下，宕掉多个zk节点后，剩余节点必须大于`总数 / 2`集群才可正常提供服务，所以`容忍度` = `ceil(N/2) - 1`
 
-            所以3台和4台的容忍度都为1，部署3台可以更节省资源
+                所以3台和4台的容忍度都为1，部署3台可以更节省资源
 
-    - 预防措施：减少假死情况出现
+    - 可靠措施：减少zk集群各节点间假死情况的出现
 
-        - 冗余通信：集群服务间建立**冗余心跳线**，防止一条通信线失效就立即导致集群节点无法通信
+        - 冗余通信：集群服务间建立**冗余心跳线**，防止单一通信线失效就立即导致集群节点无法通信
 
         - 仲裁机制：当心跳线完全断开时，使用ICMP检测网络不同是否为自身问题
 
@@ -88,19 +88,21 @@
 
 # **如何保证顺序一致性（ZAB）**
 
+![](https://mmbiz.qpic.cn/mmbiz_jpg/ibBMVuDfkZUmqb0t9xOJOXebntahoHMGMNOMJz5ibicXbq9DbBvotd05SEtuJJMggvxe7NktQyXTFSumDjDyJzHYA/640?wx_fmt=jpeg&wxfrom=5&wx_lazy=1&wx_co=1)
+
 通过支持**崩溃恢复**的ZAB**原子广播**协议，类似2PC两阶段的过程，提交保证集群结点间的**顺序**、**最终**一致性
 
 - 主要流程：
 
     1. leader收到写请求之后转换为`proposal提议`，并为proposal分配一个`全局唯一递增的事务ID`（ZXID）后，将提议放入到`FIFO队列`，按照FIFO策略将请求**发送给所有的follower**
 
-        同一时间的写请求，通过ZXID识别先后顺序
+        > 同一时间的写请求，通过ZXID识别先后顺序
 
-    2. follower接收到提议后，以`事务日志`形式**写入**到本地磁盘但不提交，写入成功后返回ACK给leader
+    2. Follower收到提议后，以`事务日志`形式**写入**到本地磁盘（prepare），写入成功后返回ACK到leader
 
-    3. leader收到**过半follower**的ack响应后，即可认为集群数据写入成功，就会发送`commit命令`给所有follower提交proposal
+    3. leader收到**过半follower**的ack响应后，即可认为集群数据写入成功，就会发送`commit命令`给所有follower，让它们提交proposal
 
-- 两种模式：
+- 两种模式：崩溃恢复（启动） -> 消息广播（启动完毕） -> 再次进入崩溃恢复（断网、重启） -> 消息广播（恢复完毕）
 
     1. 崩溃恢复
     
@@ -110,29 +112,33 @@
 
     2. 消息广播
 
-    - 进入：过半follower与leader完成状态同步，zk集群进入消息广播模式
+    - 进入：**过半follower**与leader完成状态同步，zk集群进入消息广播模式
 
         当有新加入的服务器（旧leader、新机器）启动后加入到集群时，会自动进入数据恢复模式，与leader进行数据同步
 
     - 退出：leader宕机、重启等异常情况
 
-# **master选举**
+# **zk集群master选举**
 
-涉及三个关键参数：epoch纪元、serverid、zxid
+三个关键参数：epoch纪元、zxid、serverid
+
+节点状态：LOOKING、FOLLOWING、LEADING
 
 分为两种情况：
 
-- 启动时的master选举：发起投票、收到投票、`处理投票`、`统计投票`、状态变更
+- 启动时的master选举：节点发起自身投票、收到其它节点投票、`处理投票`、`统计投票`、状态变更
 
     初始状态：LOOKING，zk单机不会进入选举状态，两台及以上会进入
+
+    由于存在自身发起投票，和处理投票后的再次发出，所以共有两次投票
 
     - 发起投票：每个Server发出初始投票，该投票都会**选择自己作为leader**服务器，投票内容包含`（myid，zxid）`
     
     - 收到投票：收到其他结点的投票信息，检查是否是本轮选举`epoch`，是否来源于follower服务器
 
-    - 处理投票：判断收到的投票的（myid，zxid）二元组的大小，选出其中最大的二元组，变更投票信息并**再次发出**
+    - 处理投票：判断收到的投票的（myid，zxid）二元组的大小，选出其中最大的二元组。变更投票信息后**再次发出**
 
-        存在自身发起投票，和处理投票后的再次发出，所以共有两次投票
+        > 以zxid大的为先，若zxid相同，再以myid为准
 
     - 统计投票：每次投票后，zk统计投票信息，当发现有**过半**机器接收到相同的投票信息，则认为已选出leader
 
@@ -144,17 +150,15 @@
 
 # **数据同步**
 
-> CP：常说的不可用指的是数据同步期间
-
 leader在收到请求时，会按照收到的顺序为每个proposal分配ZXID，并加入到FIFO队列中
 
 涉及`3种值`：
 
-- lastSyncZxid/peerLastZxid：Observer和Follower中最新的ZXID
+- lastSyncZxid/peerLastZxid：Observer、Follower中最新的ZXID
 
-- minCommittedLog/minZxid：leader的提议队列中的zxid最大值
+- minCommittedLog/minZxid：leader的proposal队列中的zxid最大值
 
-- maxCommittedLog/maxZxid：leader的提议队列中的zxid最小值
+- maxCommittedLog/maxZxid：leader的proposal队列中的zxid最小值
 
 围绕这3个值，共有`4种数据同步方式`：
 
@@ -176,7 +180,7 @@ leader在收到请求时，会按照收到的顺序为每个proposal分配ZXID�
 
 - 回滚同步
 
-    - 值：lastSyncZxid > maxCommittedLog，且**不处于同个纪元**
+    - 值：lastSyncZxid > maxCommittedLog，且**不处于同个epoch**
 
     - 场景：旧leader崩溃恢复（**已生成proposal，但未发出写入命令**），重新加入集群，且当前集群没有新的proposal产生
 
@@ -216,11 +220,17 @@ leader在收到请求时，会按照收到的顺序为每个proposal分配ZXID�
 
 # **数据不一致场景**
 
-- `查询不一致`：过半写成功则代表集群写入成功，但可能有的结点还未同步完毕，这种情况下zk保证在一段时间后能进入到最终一致
+- `查询不一致`
 
-- `leader未发送proposal宕机`：**事务日志丢失**，即使崩溃恢复重新加入集群，也会进行回滚
+    过半写成功则代表集群写入成功，但可能有的结点还未同步完毕，这种情况下zk保证在一段时间后能进入到最终一致
 
-- leader发送proposal，但发送commit时宕机：commit意味着一定有结点写入成功，所以在后续ZAB崩溃恢复中，仍旧能选出Zxid最大的机器作为新leader，*事务日志不会丢失**
+- `leader未发送proposal宕机`
+
+    **事务日志丢失**，崩溃恢复重新加入集群后发现不在同一个epoch，会进行回滚
+
+- leader发送proposal，但发送commit时宕机
+
+    **事务日志不回丢失**，发送proposal成功，则重新恢复选举出来的master（zxid最大的节点）一定会有这个日志，会在后续的数据同步过程中再次同步给其它的learner
 
 # **znode数据结构**
 
@@ -232,7 +242,9 @@ leader在收到请求时，会按照收到的顺序为每个proposal分配ZXID�
 
 - 顺序结点：`create -s /hello/x`，会在结点名称后从小到大顺序，自动添加数字（10位大小）
 
-- 临时顺序结点：`create -s -e /hello/x`，同时具备临时结点和顺序结点的特性，天然适合实现公平模式的zk分布式锁
+- 临时顺序结点：`create -s -e /hello/x`，同时具备临时结点和顺序结点的特性
+
+    > 天然适合实现公平模式的zk分布式锁
 
 存储内容：
 
@@ -248,25 +260,44 @@ leader在收到请求时，会按照收到的顺序为每个proposal分配ZXID�
 
 # **Watcher机制**
 
-指客户端在指定节点上注册watcher，并将其加入到本地的watcherManager中，当节点发生变动时，服务器通知客户端节点发生变动（`推`），客户端对节点进行拉取获取最新数据（`拉`），这种模式称为`推拉结合`
+client对zk节点注册Zookeeper Watcher，加入到client内的WatcherManager。
+
+推拉结合：当节点发生变动时，zookeeper server通知client节点发生变动（`推`），client再拉取节点最新数据（`拉`）
 
 Watcher的4个特征：
 
-- 一次性：watcher在通知后会失效，需要重新设置为true
+- 一次性：Watcher在zk server通知后会失效，需要重新设置为true
 
-- 轻量级：zk服务的通知是以watchEvent为单位的，不提供具体的节点信息，需要由zk client自行拉取，这种模式也称为推拉结合
+- 轻量级：zk服务的通知是以WatchEvent为单位的，WatchEvent的轻量级体现在其**不包含节点的具体信息**，需要zk client再自行拉取，这种模式也称为推拉结合
 
-- 串行执行：在client收到通知后，将从WatcherManager中取出回调逻辑，客户端对逻辑串行执行
+- 串行执行：client收到server通知后，从WatcherManager中取出该Watcher的回调逻辑，并对逻辑**串行执行**
 
-    > 需要注意，执行逻辑不要阻塞过长时间，否则会导致一个wacher对整个客户端阻塞过久
+    > 需要注意，执行逻辑不要阻塞过长时间，否则会导致一个Wacher对整个zookeeper client阻塞过久
 
-- 异步通知：zk server发送watcher通知到zk client的过程是异步的，不能保证节点的每个更新都监控完整，只能保证**最终一致**
+- **异步通知**：zk server发送watcher通知到zk client的过程是异步的，不能保证节点的每个更新都监控完整，只能保证**最终一致**
+
+Watcher的坑：
+
+- 异步通知，不保证每次变化都能监控到，只能保证最终一致的监控，所以不适合对于节点数据变化敏感的场景
+
+- Watcher的回调逻辑不宜阻塞过久，应结合线程池进行分发处理，防止client因某段回调逻辑阻塞过久
 
 # **zk实现分布式锁、信号量、闭锁**
 
 参考`org.apache.curator`实现：
 
 - 公平锁（默认实现）：依托**临时顺序节点**实现，具备可重入性与互斥性
+    - 公平锁，类似等待队列的方式实现，可以解决惊群效应
+
+    - 可具备重入性，通过当前持锁节点的信息判断是否是持有锁线程自身
+
+    - cp特性使其可以呈现redis cluster无法解决的锁丢失问题
+        - redis：解决单点问题引入cluster，但数据一致性无法得到保障，可能出现锁丢失问题（数据同步）
+        - zk：zab消息广播保证数据的最终一致性，不担心锁丢失情况
+
+    - 性能较差，频繁新增、删除节点，对leader而言写压力和同步成本过于庞大
+    
+    - 没有超时机制，需要进行补偿，防止服务假死导致锁无法释放
 - 读写锁
 - 联锁
 - 信号量/闭锁
@@ -317,15 +348,21 @@ Watcher的4个特征：
 
     zk：维护
 
-# **zk的cp指的是什么？**
+# **zookeeper的CP特性指的是什么？**
 
-zk的cp指的是其过半提供服务机制，防止网络分区下，产生脑裂而影响数据的一致性
+> CAP关注的应是数据的读写，选举等可以认为不在考虑范围内
 
 同机房不可用：当出现网络分区时，小于半数机器数分区的zk集群将因为过半机制关闭服务提供，即使是同个分区机房下的service也无法使用
 
-影响：在zk作为注册中心的场景下，数据的不一致仅仅会导致负载的短暂不均衡，无需cp
+zookeeper
+- C：
+    - 过半提供服务机制，不会产生脑裂现象，从而影响数据的一致性
+    - 数据同步采用zab协议，保证各节点间的数据一致性
+- A：
+    - 过半提供服务虽然保证了数据的一致性，但是也间接降低了系统的可用性
+    - zab协议同步数据期间，系统不可用
 
-- [ZooKeeper 并不适合做注册中心 - 安能的文章 - 知乎](https://zhuanlan.zhihu.com/p/98591694)
+[ZooKeeper 并不适合做注册中心 - 安能的文章 - 知乎](https://zhuanlan.zhihu.com/p/98591694)：注册中心无需cp特性，因为数据的不一致仅仅会导致负载的短暂不均衡，所以zookeeper并不适合做注册中心
 
 # 参考
 - [Zookeeper夺命连环9问](https://mp.weixin.qq.com/s?__biz=MzkzNTEwOTAxMA==&mid=2247488995&idx=1&sn=990d099cd9724931da9a414da549d093&chksm=c2b25d1ef5c5d40821fe69e42fadb96312c02654ffb921cddc9801c8ab3c4f4d3e5cae2b0b9c&token=982147105&lang=zh_CN&scene=21#wechat_redirect)
