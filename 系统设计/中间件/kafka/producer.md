@@ -38,7 +38,7 @@
 
 ## **1.1 消息累加器**
 
-RecordAccumulator的内部**为每个分区维护了一个双端队列**，队列的内容是ProducerBatch
+RecordAccumulator的内部**为每个分区维护了一个双端队列**，队列的内容是一个ProducerBatch对象双端队列
 
 ```java
 public final class RecordAccumulator {

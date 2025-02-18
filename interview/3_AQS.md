@@ -296,7 +296,7 @@ public class A1B2 {
 
     - 双向链表组成的waiting queue
     - 队列节点Node的状态（SIGNAL、CANCEL、PROGRATE）
-    - AQS的CLH状态（定制ReentrantLock、Semaphore等）
+    - AQS的CLH状态state变量（定制ReentrantLock、Semaphore等）
     - 唤醒线程的机制（由持有锁线程在release资源时，访问头节点进行唤醒）
 
 2. 非公平可重入锁和公平可重入锁
