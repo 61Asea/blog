@@ -72,4 +72,22 @@ L（loss简写）在训练中至关重要，在查找最佳未知参数过程中
 
 ### **训练数据**
 
+- training set：训练数据，一般会再分成real traning set和validation set
+    - real training set：真正在训练时使用的数据，一般可以占到90%。
+    - validation set：用于验证的数据，可以占到10%。也是本地上用于衡量模型的mse分数，后续可以在cargo上传得到对于public testing data的mse
+    - batch：分批数据，用于训练过程中，按批次计算model的loss
+
+- public testing set：公开的真实数据，用于在cargo上进行评判模型的数据集
+- private testing set：不公开的真实数据，防止有人作弊
+
 ### **训练方法**
+
+### **model bias**
+
+指的是训练过程中，模型效果不佳，呈现出来Loss无法很好往下降，这种情况称为模型具有局限性
+
+### **optimization**
+
+属于广义训练过程的最后一个步骤，求解未知参数时，找到能让loss最低的那一组最佳参数。
+
+Optimization issue：指在一些求解方法中（如gradient descent），没有找到全局最优解。
