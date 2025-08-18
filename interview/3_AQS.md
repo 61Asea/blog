@@ -1,16 +1,20 @@
 #! https://zhuanlan.zhihu.com/p/497994914
-# AQS：CLH队列的变体优化
+# AQS：CLH队列
 
 **本文已收录至个人博客：** https://github.com/61Asea/blog
 
-> AbstractQueuedSynchronizer，为ReentrantLock、Semaphore、CountDownLatch等同步工具提供基础实现，是`CLH队列`的一种变体实现
+> AbstractQueuedSynchronizer（AQS），为ReentrantLock、Semaphore、CountDownLatch等同步工具提供基础实现，底层是`CLH队列`的sleep-waitting版本。
+
+CLH队列：基于链表的自旋锁队列，每个线程在等待锁时，会自旋地等待它的前驱节点释放锁。
+- 核心思想：每个线程只监视前一个节点的状态，而不是竞争共享变量。
+- 特点：非阻塞，线程自旋不挂起。
 
 ## **朴素CLH自旋锁**
 
 ```java
 // CLH自旋锁
 public class CLH {
-
+    // CAS设置tail，保证tail的正确获取顺序
     private final AtomicReference<Node> tail;
 
     private final ThreadLocal<Node> current;
@@ -51,7 +55,9 @@ public class CLH {
 
         // 自旋判断前一个节点的状态
         while (prev.locked) {
-            Thread.sleep(100);
+            // 1. 空操作；busy-wait空轮循
+
+            // 2. Thread.sleep(100); sleep-wait线程阻塞刮起
         }
     }
 
@@ -71,66 +77,125 @@ public class CLH {
 
 结论：CLH自旋锁为`busy-waiting`，AQS为`sleep-waiting`，AQS的队列节点由前驱节点唤醒，替代朴素CLH队列的后驱节点自旋判断
 
-## **AQS的CLH变体**
+**问题：为什么AQS要使用CLH队列，而不用普通链表来实现？**
 
-组成：一个双向链表队列、一堆队列Node状态、一个CLH的state、唤醒机制
+CLH队列本质是一个双向链表，相比较单向链表，双向链表在AQS的这两个方面需求更具优势：
+1. 中断取消节点
+2. 唤醒阻塞判断
 
-抽象出**同步器的state（volatile）**，根据定义进入CLH队列的规则：
+首先，中断节点需要删除掉该节点，如果是单向链表删除节点的话会相当复杂，涉及从头到尾便利
 
-1. **CAS + volatile**方式，管理等待线程的入队出队
+其次，每个节点在被中断唤醒时，只代表着恢复执行代码逻辑的能力，而不是代表已经获取到锁，这时需要根据必要条件判断是否已经轮到了自己（判断prev节点是否为head节点，是的话尝试获取锁）。此时如果是单向链表，获取prev节点就十分麻烦。
 
-    ```java
-    // AbstractQueuedSynchronizor.class
-    public final boolean acquire(int arg) {
-        Node node = new Node(Thread.currentThread(), mode);
-        Node pred = tail;
-        if (pred != null) {
-            node.prev = pred;
-            // CAS设置新的队尾
-            if (compareAndSetTail(pred, node)) {
-                pred.next = node;
-                return node;
+## **AQS的CLH队列实现**
+
+AQS本质是一个同步器的模板，其抽象出了state变量，根据对state变量的定义不同，可以实现出不同的同步工具（如显示锁ReentrantLock、Semaphore、CountDownLatch、CyclicBarrier）
+
+组成：双向链表（**dummyHead**，**tail**）、队列元素Node（waitStatus、prev、next、thread）、AQS#state变量、入队、出队（唤醒后继节点机制）
+
+> 注意点：链表的头节点是一个dummy节点，这个dummy不是一成不变的。根据当前线程释放锁后，dummy后的节点被唤醒并竞争锁，若成功则将该节点变成新的dummy节点。dummy的状态可能会被其后继节点修改为SIGNAL。
+
+1. 入队（以非公平为例）： 
+
+    - 若获取锁失败，则需要入队。AQS通过**CAS**设置队尾的方式，低成本管理线程入队。
+
+        ```java
+        // AbstractQueuedSynchronizor.class
+        public final boolean acquire(int arg) {
+            Node node = new Node(Thread.currentThread(), mode);
+            Node pred = tail;
+            if (pred != null) {
+                node.prev = pred;
+                // CAS设置新的队尾
+                if (compareAndSetTail(pred, node)) {
+                    pred.next = node;
+                    return node;
+                }
+            }
+            // 上述设置队尾失败，进入enq()中自旋设置
+            enq(node);
+            return node;
+        }
+        ```
+
+    - 每个节点入队后，需要保证**前驱节点状态是SIGNAL**，自己才可以进入阻塞状态。在ownner线程（持锁线程）执行完毕后，双向链表的第一个节点（dummy后的节点）SIGNAL状态作为是否唤醒后驱节点的依据。
+
+        ```java
+        // AbstractQueuedSynchronizor.class
+        public final boolean release(int arg) {
+            if (tryRelease(arg)) {
+                Node h = head;
+                // h.waitStatus在
+                if (h != null && h.waitStatus != 0)
+                    unparkSuccessor(h);
+                return true;
+            }
+            return false;
+        }
+        ```
+
+2. 出队
+
+    - 当前持锁线程解锁，调用release()方法触发唤醒逻辑
+
+        ```java
+        public final boolean release(int arg) {
+            if (tryRelease(arg)) {
+                Node h = head;
+                // head是dummy节点，需要唤醒的是dummy后的第一个节点
+                // h != null && h.waitStatus != 0，代表了以下三个情况无需唤醒
+                // 1. 队列为空（从未产生过并发竞争锁）
+                // 2. 队列不为空，但是只有dummy节点（之前发生过竞争，但是现在没有线程在阻塞等待）
+                // 3. 队列不为空，也不只有dummy节点，但是后续的节点还没进入阻塞状态，没有设置dummy的状态为SIGNAL。
+                if (h != null && h.waitStatus != 0)
+                    unparkSuccessor(h);
+                return true;
+            }
+            return false;
+        }
+        ```
+
+    - 回到之前线程阻塞的代码逻辑（acquireQueued）：
+
+        ```java
+        final boolean acquireQueued(final Node node, int arg) {
+            boolean failed = true;
+            try {
+                boolean interrupted = false;
+                for (;;) {
+                    // 重新被唤醒，判断前驱节点是否为dummy，是的话自己尝试获取锁
+                    final Node p = node.predecessor();
+                    if (p == head && tryAcquire(arg)) {
+                        // 成功获取锁，将自己设置为新的dummy（waitStatus=0）
+                        setHead(node);
+                        p.next = null; // help GC
+                        failed = false;
+                        return interrupted;
+                    }
+                    if (shouldParkAfterFailedAcquire(p, node) &&
+                        parkAndCheckInterrupt())
+                        interrupted = true;
+                }
+            } finally {
+                if (failed)
+                    cancelAcquire(node);
             }
         }
-        // 上述设置队尾失败，进入enq()中自旋设置
-        enq(node);
-        return node;
-    }
-    ```
+        ```
 
-2. 每个节点入队后对会**尝试修改前一个节点的状态**，在ownner线程执行完毕后，该状态作为是否唤醒后驱节点的依据
-
-    ```java
-    // AbstractQueuedSynchronizor.class
-    public final boolean release(int arg) {
-        if (tryRelease(arg)) {
-            Node h = head;
-            // h.waitStatus在
-            if (h != null && h.waitStatus != 0)
-                unparkSuccessor(h);
-            return true;
-        }
-        return false;
-    }
-    ```
-
-3. 在可以竞争到资源时（当前仅当线程节点处于head之后，且尝试获取资源成功）挂起
-
-4. 竞争到资源的节点，在执行完毕后，会将自身节点的状态修改为0，并唤醒后续的节点
-
-5. 线程被唤醒后，意味着队头线程已经执行完毕，将队头线程出队
-
-> 类比：synchronized的waiting queue，collection list和entry list对应除了队头和第二个节点的CLH队列部分，on deck对应第二个节点
+> 可以类比synchronized的on deck和waiting queue结构，waiting queue（collection list和entry list），on deck对应了队列的第二个节点，对应CLH队列除开第二个节点之后的部份。
 
 难点：
 
-- 获取资源和释放资源的并发安全性，由`AQS#acquiredQueued()#tryAcquired()`方法和`AQS#release()#tryRelease()`对state的CAS操作保障
+- 入队、出队操作对应的方法入口
 
-    > 前驱线程节点一定被设置成SIGNAL后，后驱线程才会被挂起，否则会出现无法唤醒的情况
+- 获取、释放资源两种操作的并发安全保证。由`AQS#acquiredQueued()#tryAcquired()`方法和`AQS#release()#tryRelease()`对state的CAS操作保障
 
-    <!-- 当前驱线程不唤醒后驱线程，则肯定资源已被释放，后续线程可以获得资源不被阻塞 -->
+- 理解队列中的节点状态、dummy节点
+
+    - 后驱线程被挂起前，会先检查前驱节点的状态，确保设置成SIGNAL后才阻塞，否则会出现无法唤醒的情况
     
-    后驱线程阻塞，则队列必定有值，前驱线程在完成任务后根据SIGNAL/PROPAGATE标识，若有则唤醒后驱线程
+    - 后驱线程阻塞，则队列必定有值，前驱线程在完成任务后根据SIGNAL/PROPAGATE标识，若有则唤醒后驱线程。
 
 - 唤醒的方式：独占模式**只在释放资源时唤醒**，传播模式在**获取资源和释放资源**时都会唤醒后续线程
 
@@ -231,8 +296,12 @@ public class CLH {
 # **交替执行打印的demo**
 
 ```java
+package collection;
+
+import java.util.concurrent.Semaphore;
+
 public class A1B2 {
-    
+
     private Semaphore[] semaphores;
 
     private volatile int pos;
@@ -249,21 +318,24 @@ public class A1B2 {
         }
     }
 
+    // (0, A) (1, B) (2, C) (3, D)
     public void run(int count, char output) throws InterruptedException {
         int sum = sumCount.get();
         while (sum < 2) {
             // 停顿
             semaphores[count].acquire();
 
-            if (count == pos) {
-                pos = (count + 1) % semaphores.length;
-                System.out.println(output + ", 竞争次数：" + raceCount);
-                raceCount = 0;
-                sumCount.set(sum++);
-            } else {
-                raceCount++;
+            if (count > 0) {
+                Thread.sleep(1000);
             }
 
+            if (count == pos) {
+                pos = (count + 1) % semaphores.length;
+                System.out.println(output);
+                sumCount.set(sum++);
+            }
+
+            // 释放下一序列的线程
             semaphores[pos].release();
         }
     }

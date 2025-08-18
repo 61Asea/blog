@@ -29,25 +29,22 @@ synchronized是java提供的原子性**内置锁**，也称为监视器锁，当
 
     ![synchronized原理](https://asea-cch.life/upload/2022/01/synchronized%E5%8E%9F%E7%90%86-722075f8a2a04632ac044ab2e37a1a13.png)
 
-    - waiting queue：等待队列，存放竞争线程，内部又分为collectionList和`entrySet`
+    - cxq(Contention Queue)：用于快速接收存放每个竞争失败的线程，每个竞争失败的线程会通过**CAS头插法**加入到该集合。专门划分该区域是为了与管理线程唤醒的操作进行解耦，专注于无锁化加入线程，**避免高并发情况下入队、唤醒出队这两种操作的并发安全性冲突产生的性能下降**
 
-        - collectionList：用于存放每个竞争失败的线程，每个竞争失败的线程会加入到该集合，专门划分该区域是为了**解决大量线程在并发情况失败后对等待队列进行锁竞争**
-
-        - entryList：入口集，存放竞争候选者，候选者们作为准备进入OnDeck的预备线程，由JVM每次从collectionList挪出一部分线程加入
+    - Entry List：入口集，专注于存放和管理竞争锁的候选者，并每次从候选者们只选出一个**OnDeck**状态的预备线程（避免惊群效应）。在默认Qmode=0策略下，当entryList为空时，JVM会将cxq的线程全都加入到entryList中。
     
-    - blocking queue：阻塞队列，主要是监视器对象的`等待集合waitSet`，当获得监视器的owner线程调用obj.wait()方法时，会进入到该集合等待被notify()唤醒
+    - Waiting Set：阻塞队列，主要是监视器对象的`等待集合waitSet`，当获得监视器的owner线程调用obj.wait()方法时，会进入到该集合等待被notify()唤醒。
     
-        唤醒后的线程无需进入collectionList，直接进入entryList
+        唤醒后的线程无需进入cxq，直接进入entryList
 
-    - onDeck：`任意时刻，最多只有一个线程正在竞争锁资源，该线程称为OnDeck`
-
-    > 处于waiting queue、ondeck的线程都处于BLOCKED状态，处于blocking queue的线程都处于WAITING状态
+    > 处于cxq、entry list的非onDeck线程都处于BLOCKED状态；处于entry list的onDeck线程为Runnable状态；处于waiting set的线程都处于WAITING状态
+    
     
 - 可见性/有序性：操作系统底层使用的互斥锁，最终汇编后也包括volatile使用的#Lock前缀指令，该指令通过读/写屏障确保变量的可见性和有序性
 
 - 可重入性：owner线程每次进入/退出同步块，monitor对象的计数器都会加/减1，重入性避免线程出现自己锁自己造成死锁的现象
 
-- 非公平锁：synchronized在收到新线程的锁请求时，**有可能抢占onDeck线程的锁资源**，不会立即加入到collection list中，而是先自旋获取锁，如果获取成功则直接成功，否则再加入collection list中
+- 非公平锁：synchronized在收到新线程的锁请求时，**有可能抢占onDeck线程的锁资源**，不会立即加入到collection list中，而是先自旋获取锁，如果获取成功则直接成功，否则再加入cotention queue中
 
 > 被唤醒后的线程，会被加入到entryset（入口集）中，而竞争锁资源的只有onDeck线程（等待被唤醒），即任何时刻都只有一个线程正在竞争锁资源，不会出现惊群效应
 
@@ -63,7 +60,9 @@ mutex_lock重量级锁：产生用户态 -> 内核态 -> 用户态的系统状�
 
 优化：通过某些手段，**减少mutex_lock锁的使用频率**
 
-- 锁自旋：竞争线程在获取锁资源失败后，不要立即调用mutex_lock陷入阻塞状态，而是再通过多次CAS操作尝试自旋获取锁资源，直到到达一定次数后仍旧无法获取资源时，才使用mutex_lock进入阻塞状态
+- 锁自旋：竞争线程在获取锁资源失败后，不会立即调用mutex_lock陷入阻塞状态，而是**再通过多次CAS操作**尝试自旋获取锁资源，直到到达一定次数后仍旧无法获取资源时，才使用mutex_lock进入阻塞状态。
+
+    - 阶段：重量级锁阶段
 
     - 缺点：如果没有控制好自旋次数，cpu会陷入较长一段时间的空轮询，极大浪费计算资源
 
@@ -171,6 +170,53 @@ hotspot代码：`lock: addl`
         }
         ```
 
+面试问题：
+
+**volatile是否可以保证数组元素之间的可见性？如果不行，应如何解决？**
+
+volatile只能保证数组引用对其他线程的可见性，如对数组对象进行初始化赋值时（从null到有引用值），但无法保证数组元素之间的可见性。
+
+解决方案：
+
+1. 转换为对象类型数组，对象内部新增一个volatile修饰的基本类型
+
+    ```java
+    // 原写法
+    volatile int[] counter;
+
+    // 新写法    
+    static class Counter {
+        // 数组元素内部通过volatile引入读写屏障
+        volatile int count;
+    }
+    volatile Counter[] counter = new Counter[10];
+    ```
+
+2. 使用Atomic数组类，如AtomicIntegerArray
+
+    ```java
+    AtomicIntegerArray atomicArray = new AtomicIntegerArray(10);
+    atomicArray.set(0, 1); // 保证元素的可见性和原子性
+    ```
+
+3. 通过sychronized代码块引入读写屏障（不推荐）
+
+    ```java
+    int[] counter = new counter[10];
+    sychronized(this) {
+        counter[0] = 100;
+    }
+    ```
+
+4. 当可以确定数组元素与线程绑定时，可以用ThreadLocal
+
+    ```java
+    ThreadLocal<int[]> threadLocalCounter = ThreadLocal.withInitial(() -> new int[10]);
+
+    int[] counter = threadLocalCounter.get();
+    counter[0] = 1;
+    ```
+
 # **3. JMM**
 
 为了弥补CPU与内存之间读写速度的差异，硬件发展过程中引入高速缓存（L1、L2、L3三级缓存）弥补差距，随之产生**缓存一致性/可见性问题**，且编译器与CPU的重排序也引入**有序性**问题，不同的硬件和操作系统内存也**存在访问差异**，因此需要JMM内存模型对多线程操作下的规范约束，屏蔽底层的差异保证**Java进程在不同的平台下仍能达到一致的内存访问效果**
@@ -240,7 +286,7 @@ JMM是一套屏蔽不同硬件和操作内存访问差异的规范机制，在JM
             - 调用obj.wait()
             - 调用threadObj.join()
 
-- BLOCKED：阻塞状态，处于Waiting Queue（collection list和entry list）、On Deck的线程，等待竞争监视器锁
+- BLOCKED：阻塞状态，处于synchronized中的contention queue和entry list的线程，等待竞争监视器锁
 
     - 进入：
         - RUNNING -> BLOCKED：如上
@@ -280,28 +326,55 @@ JMM是一套屏蔽不同硬件和操作内存访问差异的规范机制，在JM
 
 # **5. ThreadLocal**
 
-ThreadLocal本身不存储数据，而是在每个线程中创建一个ThreadLocalMap，线程访问变量时，其实访问的是自身Map中的变量值，以此实现**线程与线程之间相互隔离**，达到**线程封闭**效果
+ThreadLocal本身不存储数据。
+
+实现原理：每个Thread类中都会创建一个ThreadLocal.ThreadLocalMap对象。线程访问ThreadLocal变量时，其实访问的是自身线程对象Map中的变量值，以此实现**线程与线程之间相互隔离**，达到**线程封闭**效果。
 
 ThreadLocalMap哈希冲突：使用**开放地址法**解决哈希冲突，具体采用线性探测
 
-内存泄漏：ThreadLocalMap除非在线程结束，否则始终无法被回收
+内存泄漏：指的是**线程池的核心线程**生命周期和容器保持一致，所以其ThreadLocalMap不能像非线程池线程正常GC。当**ThreadLocal在代码作为局部变量使用**，ThreadLocalMap中的Entry对象仍能保留对ThreadLocal的value引用，从而导致Entry的value出现内存泄漏问题。
 
-措施：
+弱引用：指的是Entry的key是弱引用类型，当没有其他强引用时，可以被GC回收而不用担心ThreadLocalMap对其的引用。是为了解决内存泄漏而引入，但仅解决了Entry.key和ThreadLocal对象的泄漏问题。
 
-- key为弱引用，每次GC时都会回收，从而使得entry数组存在一堆key为null，value有值的entry对象，在用户下次使用时，可以将值直接覆盖在这些key为null的Entry
+> 当出现将ThreadLocal作为局部变量使用且线程池核心线程时，若无弱引用，则ThreadLocalMap对ThreadLocal的引用将一直保留，将导致ThreadLocal对象和Entry双重泄漏；若有弱引用，随着方法退出，堆内的ThreadLocal对象将失去所有强引用
 
-- **使用完之后调用remove方法删除Entry对象**
+```java
+@RestController
+public class Controller {
+    // 以下代码会出现内存泄漏，因为符合上述的两个条件
+    // 1. Tomcat线程池核心线程处理Controller逻辑。
+    // 2. ThreadLocal是一个局部变量。
+    // 内存泄漏：当方法结束时，方法stack会失去对该ThreadLocal对象的引用，但因为ThreadLocalMap仍然有对其value的强引用，产生Entry#value的内存泄漏。当多次执行getVal方法时，泄漏会愈发严重，从而可能产生OOM问题。
+    @GetMapping("/getVal")
+    public Integer getVal() {
+        ThreadLocal<Integer> threadLocalVal = ThreadLocal.withInitial(() -> 100);
+        // 逻辑操作...
+        return threadLocalVal.get()l
+    }
+}
+```
+
+解决措施：
+
+- 首先需要确保ThreadLocal的使用方式是否恰当，必须确保ThreadLocal作为静态变量出现使用。
+- **每次使用完之后，显式调用threadLocal.remove()方法删除Entry对象**
+- JDK8优化：set()和remove()时会主动清理key为null的entry对象，并将新值直接复用已清理的Entry槽位。
 
 # **5. FutureTask**
 
-支持**获取结果**、**同步执行**的异步任务类，实现了Runnable和Future接口，主要实现思路类似AQS：结合volatile、CAS（伴随着状态自旋和阻塞），使用`并发无锁栈`
+支持其他线程**获取结果**、**同步执行**的异步任务类，实现了Runnable和Future接口。
 
-并发无锁栈：只有一个waiters引用，全部线程都只通过一个CAS操作设置waiters指针（设置成功的同时q.next = waiters也是成功的）
+主要实现思路类似AQS：结合volatile、CAS（伴随着状态自旋和阻塞）、`并发无锁栈`
+
+**并发无锁栈**：只有一个waiters引用，全部线程都只通过一个CAS操作设置waiters指针（设置成功的同时q.next = waiters也是成功的）
 
 ```java
-private volatile WaitNode waiters;
+class FutureTask {
+    private volatile WaitNode waiters;
 
-queued = UNSAFE.compareAndSwapObject(this, waitersOffset, q.next = waiters, q);
+    // CAS设置
+    queued = UNSAFE.compareAndSwapObject(this, waitersOffset, q.next = waiters, q);
+}
 ```
 
 - 并发无锁栈waiters：FutureTask保留栈顶元素的引用，每有一个调用`get()`方法等待任务的线程，都将从栈顶入栈，所以出栈则是从栈顶元素开始（先进后出）
@@ -314,9 +387,52 @@ queued = UNSAFE.compareAndSwapObject(this, waitersOffset, q.next = waiters, q);
 
     - 如果为CANCELLED（已取消），则直接抛出任务取消异常
 
-    - 否则，进入并发无锁栈中阻塞，等待唤醒
+    - **否则，进入并发无锁栈中阻塞，等待唤醒**
 
-- FutureTask#finishCompletion：唤醒并发无锁栈的所有线程
+- FutureTask#finishCompletion：task完成时，唤醒其他线程
+
+    - 保存waiters，再设置waiters对象为null
+    - 便利waiters，唤醒并发无锁栈内的所有线程
+
+面试问题：如何使用CAS实现无锁安全栈？怎么避免ABA问题？FutureTask中如何规避ABA问题？
+
+需要实现pop()和push()方法：
+- pop()：通过CAS设置栈顶为当前栈顶的下一个元素
+    - 预期值：旧栈顶
+    - 设置值：旧栈顶的下一个元素
+- push(): 通过CAS设置栈顶为新入栈元素，如果成功则将新入栈元素的next指针设置为预期值
+    - 预期值：旧栈顶
+    - 设置值：新入栈元素
+
+
+```java
+public class ConcurrentStack<E> {
+    private AtomicReference<Node<E>> top = new AtomicReference<>();
+
+    public void push(E item) {
+        Node<E> newHead = new Node<>(item);
+        Node<E> oldHead;
+        do {
+            oldHead = top.get();      // 读取当前栈顶
+            newHead.next = oldHead;   // 新节点指向原栈顶
+        } while (!top.compareAndSet(oldHead, newHead)); // CAS更新栈顶
+    }
+
+    public E pop() {
+        Node<E> oldHead;
+        Node<E> newHead;
+        do {
+            oldHead = top.get();
+            if (oldHead == null) return null;
+            newHead = oldHead.next;
+        } while (!top.compareAndSet(oldHead, newHead))
+    }
+}
+```
+
+可以通过版本号（AtomicStampedReference）、状态机来解决ABA问题。
+
+FutureTask则先设置赋值节点的thread变量为null，删除节点时通过判断节点内的thread变量，当thread为空再进行CAS操作。即使JVM复用了该节点地址，并且出现了ABA问题，但因为被复用地址的对象thread必定有值，则不会出现ABA后续的问题。
 
 # **6. CAS原理**
 
@@ -367,7 +483,79 @@ CAS又名compare and swap（比较并交换），主要是通过**处理器指�
 
 - 一次性拿到所有的资源（锁的粒度放大）：通用的解决方案，一定可以解决死锁，但是效率不高
 
-- 
+# **7. CompletableFuture**
+- [美团CompletableFuture解决卖家端问题](https://tech.meituan.com/2022/05/12/principles-and-practices-of-completablefuture.html)
+
+支持对多个异步任务进行组合、编排，并通过使用ForkJoinPool以提升运行效率。
+
+依赖类型：
+- 一元依赖：thenApply、thenAccept、thenCompose
+- 二元依赖：thenCombine
+- 多元依赖：CompletableFuture.allOf、CompletableFuture.anyOf
+
+原理：
+- stack：回调栈，存储当前任务结果处理完后，需要触发依赖的动作
+- result：结果，存储当前任务的结果情况
+
+```java
+public class CompletableFuture<T> implements Future<T>, CompletionStage<T> {
+    // result用于存储当前CF的结果
+    volatile Object result;
+    // stack（Completion）表示当前CF完成后需要触发的依赖动作（Dependency Actions）
+    volatile Completion stack; 
+
+    public <U> CompletableFuture<U> thenApply(
+        Function<? super T,? extends U> fn) {
+        return uniApplyStage(null, fn);
+    }
+
+    // 编排下一个任务
+    private <V> CompletableFuture<V> uniApplyStage(
+        Executor e, Function<? super T,? extends V> f) {
+        if (f == null) throw new NullPointerException();
+        CompletableFuture<V> d =  new CompletableFuture<V>();
+        // uniApply()：
+        // 1. 先尝试读取当前任务是否已完成
+        // 2. 未完成，则将当前编排的下一个任务放入栈中
+        // 3. 已完成，则将当前任务提交到ForkJoinPool线程池中
+        if (e != null || !d.uniApply(this, f, null)) {
+            UniApply<T,V> c = new UniApply<T,V>(e, d, this, f);
+            push(c);
+            c.tryFire(SYNC);
+        }
+        return d;
+    }
+}
+```
+
+面试问题：CompletableFuture如何支持异步任务依赖执行的？
+
+CompletableFutureTask通过实现**CompletionStage**借口类，提供了对不同异步任务编排的能力，其中关于多个异步任务依赖执行属于thenApply、thenSupply、thenRun等多个接口行为.
+
+在实现细节上，则采用了**回调栈**来控制任务顺序，用户通过注册回调。并当前任务执行完毕后，会读取回调栈中的任务继续执行，从而实现异步任务的依赖执行。
+
+# **8. ForkJoinPool**
+
+ForkJoinPool基于分治的思想理念，将大任务拆分成多个小任务，并将各个小任务充分分配给多个cpu，从而提升cpu的利用效率。
+
+每个`ForkJoinWorkerThread`都有内置一个**双端队列**。
+
+> 这种模式很适用于CPU密集的任务，池内线程数一般为CPU个数+1，降低线程间切换的开销。
+
+**工作窃取机制**：
+
+ForkJoinPool经常搭配`ForkJoinTask`任务实现类进行使用，因为ForkJoinTask主要提供了fork()/join()这两个方法来实现对任务的结构，以及对于提升线程工作队列的利用效率：
+- compute()：抽象方法，一般实现上会将当前任务进行拆分为更小的任务
+- fork(): 将任务加入到当前ForkJoinWorkerThread的队列
+- join(): 当前任务若未完成，线程处于阻塞等待状态时，会窃取其他线程队列的任务
+
+**协程**：JDK19基于ForkJoinPool实现虚拟线程。
+
+面试问题：Java 8 Stream的并行处理原理是什么？ForkJoinPool的工作窃取机制又是什么？
+
+Java 8 Stream是通过Fork/Join工作框架（ForkJoinPool线程池）进行并行处理的。ForkJoinPool线程池基于分治思想，通过将大任务拆分成小任务，并将多个小任务充分分配给多个cpu，从而实现并行处理，以提升cpu利用效率和性能。
+
+ForkJoinPool的每个工作线程都维护一个双端队列，当自身线程处于阻塞等待/空闲状态时，会去其他工作线程窃取任务进行计算，充分发挥了各个cpu的性能，减少了某些线程的阻塞空档期。
 
 # 参考
 - [Java基础篇](https://mp.weixin.qq.com/s?__biz=MzkzNTEwOTAxMA==&mid=2247485644&idx=1&sn=db46ab83196031d8f563585b72a7b511&chksm=c2b24031f5c5c927bd125e219d4c2c810254f49ddc28988591978d27fe10a07eac85247bf89e&token=982147105&lang=zh_CN&scene=21#wechat_redirect)
